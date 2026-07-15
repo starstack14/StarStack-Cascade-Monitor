@@ -1,0 +1,39 @@
+# Local configuration and databases
+config.local.json
+*.local.json
+*.db
+*.db-shm
+*.db-wal
+.env
+.env.*
+
+# Secrets and certificates
+keys/*
+!keys/README.md
+*.pem
+*.key
+*.pfx
+*.p12
+
+# Runtime data
+backups/
+diagnostics/
+logs/
+caddy-data/
+tools/
+
+# Python / build output
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+build/
+dist/
+*.spec
+
+# Editors and OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+desktop.ini
