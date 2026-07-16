@@ -35,7 +35,7 @@ APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False)
 PROJECT_DIR = APP_DIR.parent if getattr(sys, "frozen", False) and APP_DIR.name.lower() == "dist" else APP_DIR
 CONFIG_PATH = APP_DIR / "config.local.json"
 DEFAULT_ROUTER_KEY = PROJECT_DIR / "keys" / "router_monitor_ed25519"
-APP_VERSION = "2.1.0"
+APP_VERSION = "2.2.0"
 BG = "#0c080d"
 HEADER = "#150c12"
 CARD = "#21131b"
@@ -298,6 +298,10 @@ class MonitorApp(tk.Tk):
         self._leak_running = False
         self._log_window: tk.Toplevel | None = None
         self._lan_window: tk.Toplevel | None = None
+        self._notification_window: tk.Toplevel | None = None
+        self._timeline_window: tk.Toplevel | None = None
+        self._metrics_window: tk.Toplevel | None = None
+        self._notifications_seen_at = int(time.time())
         self._last_lan_devices: list[LanDevice] = []
         self._blocked_macs: set[str] = set()
         self._device_metadata: dict[str, tuple[str, bool]] = {}
@@ -381,6 +385,11 @@ class MonitorApp(tk.Tk):
         tk.Button(header, text="×", command=self.hide_to_tray, bg=HEADER, fg=MUTED, bd=0,
                   activebackground=HEADER, activeforeground=TEXT, font=("Segoe UI", 14),
                   cursor="hand2").pack(side="right", padx=(2, 7))
+        self.notification_button = tk.Button(
+            header, text="◇ 0", command=self.show_notification_center, bg=HEADER, fg=MUTED, bd=0,
+            activebackground=HEADER, activeforeground=ORANGE, font=("Segoe UI Semibold", 8), cursor="hand2"
+        )
+        self.notification_button.pack(side="right", padx=2)
         for widget in (logo, title_box, *logo.winfo_children(), *title_box.winfo_children()):
             widget.bind("<ButtonPress-1>", self._drag_start)
             widget.bind("<B1-Motion>", self._drag_move)
@@ -444,6 +453,8 @@ class MonitorApp(tk.Tk):
             pystray.MenuItem("Обновить", lambda: self.after(0, self.refresh_now)),
             pystray.MenuItem("Проверить выходные IP", lambda: self.after(0, self.force_route_check)),
             pystray.MenuItem("Проверить DNS / IPv6", lambda: self.after(0, self.start_leak_test)),
+            pystray.MenuItem("Центр уведомлений", lambda: self.after(0, self.show_notification_center)),
+            pystray.MenuItem("Таймлайн инцидентов", lambda: self.after(0, self.show_incident_timeline)),
             pystray.MenuItem("Журнал событий", lambda: self.after(0, self.show_event_log)),
             pystray.MenuItem("Устройства домашней сети", lambda: self.after(0, self.show_lan_devices)),
             pystray.MenuItem("Все известные устройства", lambda: self.after(0, self.show_known_devices)),
@@ -1032,6 +1043,180 @@ class MonitorApp(tk.Tk):
             lines.append(f"{stamp}  {level_icons.get(level, '·')}  {message}")
         self._show_text_window("Журнал событий — StarStack Cascade", "\n".join(lines) or "Событий пока нет")
 
+    def _update_notification_badge(self) -> None:
+        unread = len(self.history.events_since(self._notifications_seen_at))
+        self.notification_button.configure(text=f"◆ {unread}", fg=ORANGE if unread else MUTED)
+
+    def show_notification_center(self) -> None:
+        if self._notification_window and self._notification_window.winfo_exists():
+            self._notification_window.destroy()
+        self._notifications_seen_at = int(time.time())
+        self._update_notification_badge()
+        window = tk.Toplevel(self)
+        self._notification_window = window
+        window.title("Центр уведомлений — StarStack")
+        window.geometry("560x620")
+        window.minsize(460, 420)
+        window.configure(bg=BG)
+        head = tk.Frame(window, bg=HEADER, padx=18, pady=14)
+        head.pack(fill="x")
+        tk.Label(head, text="ЦЕНТР УВЕДОМЛЕНИЙ", bg=HEADER, fg=TEXT,
+                 font=("Segoe UI Semibold", 13)).pack(side="left")
+        ttk.Button(head, text="Таймлайн инцидентов", command=self.show_incident_timeline).pack(side="right")
+        events = self.history.recent_events(100)
+        canvas = tk.Canvas(window, bg=BG, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(window, orient="vertical", command=canvas.yview)
+        content = tk.Frame(canvas, bg=BG)
+        content_id = canvas.create_window((0, 0), window=content, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side="left", fill="both", expand=True, padx=(12, 0), pady=10)
+        scrollbar.pack(side="right", fill="y", pady=10)
+        content.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(content_id, width=e.width))
+        palette = {"error": RED, "warning": ORANGE, "ok": GREEN, "info": CYAN}
+        icons = {"error": "×", "warning": "!", "ok": "✓", "info": "·"}
+        if not events:
+            tk.Label(content, text="Уведомлений пока нет", bg=BG, fg=MUTED,
+                     font=("Segoe UI", 10), pady=30).pack(fill="x")
+        for timestamp, level, message in events:
+            accent = palette.get(level, MUTED)
+            shell = tk.Frame(content, bg=accent, padx=2)
+            shell.pack(fill="x", pady=4)
+            card = tk.Frame(shell, bg=CARD, padx=12, pady=10)
+            card.pack(fill="x")
+            tk.Label(card, text=icons.get(level, "·"), bg=CARD_ALT, fg=accent, width=3,
+                     font=("Segoe UI Semibold", 10)).grid(row=0, column=0, rowspan=2, padx=(0, 10))
+            tk.Label(card, text=message, bg=CARD, fg=TEXT, justify="left", wraplength=420,
+                     font=("Segoe UI Semibold", 9)).grid(row=0, column=1, sticky="w")
+            stamp = time.strftime("%d.%m.%Y  %H:%M:%S", time.localtime(timestamp))
+            tk.Label(card, text=stamp, bg=CARD, fg=MUTED,
+                     font=("Segoe UI", 7)).grid(row=1, column=1, sticky="w", pady=(4, 0))
+            card.columnconfigure(1, weight=1)
+
+    @staticmethod
+    def _format_duration(seconds: int) -> str:
+        seconds = max(0, int(seconds))
+        if seconds < 60:
+            return f"{seconds} сек"
+        if seconds < 3600:
+            return f"{seconds // 60} мин"
+        hours, remainder = divmod(seconds, 3600)
+        return f"{hours} ч {remainder // 60} мин"
+
+    def show_incident_timeline(self) -> None:
+        if self._timeline_window and self._timeline_window.winfo_exists():
+            self._timeline_window.destroy()
+        window = tk.Toplevel(self)
+        self._timeline_window = window
+        window.title("Таймлайн инцидентов — StarStack")
+        window.geometry("680x560")
+        window.minsize(540, 420)
+        window.configure(bg=BG)
+        incidents = self.history.recent_incidents(100)
+        now = int(time.time())
+        total_duration = sum((ended or now) - started for _, _, started, ended, _ in incidents)
+        head = tk.Frame(window, bg=HEADER, padx=18, pady=14)
+        head.pack(fill="x")
+        tk.Label(head, text="ТАЙМЛАЙН ИНЦИДЕНТОВ", bg=HEADER, fg=TEXT,
+                 font=("Segoe UI Semibold", 13)).pack(anchor="w")
+        tk.Label(head, text=f"Событий: {len(incidents)}   ·   суммарно: {self._format_duration(total_duration)}",
+                 bg=HEADER, fg=MUTED, font=("Segoe UI", 8)).pack(anchor="w", pady=(4, 0))
+        canvas = tk.Canvas(window, bg=BG, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(window, orient="vertical", command=canvas.yview)
+        content = tk.Frame(canvas, bg=BG)
+        content_id = canvas.create_window((0, 0), window=content, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side="left", fill="both", expand=True, padx=(14, 0), pady=12)
+        scrollbar.pack(side="right", fill="y", pady=12)
+        content.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(content_id, width=e.width))
+        if not incidents:
+            tk.Label(content, text="Инцидентов пока не зафиксировано", bg=BG, fg=GREEN,
+                     font=("Segoe UI Semibold", 10), pady=30).pack(fill="x")
+        for _incident_id, component, started, ended, _message in incidents:
+            active = ended is None
+            row = tk.Frame(content, bg=CARD, padx=12, pady=10)
+            row.pack(fill="x", pady=4)
+            tk.Label(row, text="●", bg=CARD, fg=RED if active else GREEN,
+                     font=("Segoe UI", 10)).grid(row=0, column=0, rowspan=2, padx=(0, 10))
+            tk.Label(row, text=component, bg=CARD, fg=TEXT,
+                     font=("Segoe UI Semibold", 10)).grid(row=0, column=1, sticky="w")
+            status = "АКТИВЕН" if active else "ВОССТАНОВЛЕН"
+            tk.Label(row, text=status, bg=CARD_ALT, fg=RED if active else GREEN, padx=7, pady=2,
+                     font=("Segoe UI Semibold", 7)).grid(row=0, column=2, sticky="e")
+            period = time.strftime("%d.%m %H:%M:%S", time.localtime(started))
+            if ended:
+                period += "  →  " + time.strftime("%d.%m %H:%M:%S", time.localtime(ended))
+            duration = self._format_duration((ended or now) - started)
+            tk.Label(row, text=f"{period}   ·   {duration}", bg=CARD, fg=MUTED,
+                     font=("Segoe UI", 8)).grid(row=1, column=1, columnspan=2, sticky="w", pady=(5, 0))
+            row.columnconfigure(1, weight=1)
+
+    def show_metrics_window(self, kind: str, item_key: str, title: str) -> None:
+        if self._metrics_window and self._metrics_window.winfo_exists():
+            self._metrics_window.destroy()
+        window = tk.Toplevel(self)
+        self._metrics_window = window
+        window.title(f"Метрики — {title}")
+        window.geometry("760x460")
+        window.minsize(620, 380)
+        window.configure(bg=BG)
+        state = {"field": "ram", "seconds": 3600}
+        head = tk.Frame(window, bg=HEADER, padx=16, pady=12)
+        head.pack(fill="x")
+        tk.Label(head, text=title, bg=HEADER, fg=TEXT,
+                 font=("Segoe UI Semibold", 13)).pack(side="left")
+        controls = tk.Frame(head, bg=HEADER)
+        controls.pack(side="right")
+        chart = tk.Canvas(window, bg=CARD, highlightthickness=0)
+        chart.pack(fill="both", expand=True, padx=16, pady=(12, 6))
+        summary = tk.Label(window, text="", bg=BG, fg=MUTED, font=("Consolas", 9))
+        summary.pack(pady=(0, 12))
+
+        def redraw(*_args) -> None:
+            values = self.history.values(kind, item_key, state["field"], state["seconds"])
+            chart.delete("all")
+            width = max(300, chart.winfo_width())
+            height = max(220, chart.winfo_height())
+            left, top, right, bottom = 48, 22, width - 18, height - 34
+            for step in range(5):
+                y = top + (bottom - top) * step / 4
+                chart.create_line(left, y, right, y, fill=BORDER)
+            if len(values) < 2:
+                chart.create_text(width / 2, height / 2, text="Недостаточно данных для графика",
+                                  fill=MUTED, font=("Segoe UI", 11))
+                summary.configure(text="Данные появятся после нескольких обновлений мониторинга")
+                return
+            low, high = min(values), max(values)
+            scale_high = 100.0 if state["field"] == "ram" else max(high * 1.15, 1.0)
+            points: list[float] = []
+            for index, value in enumerate(values):
+                x = left + index * (right - left) / max(1, len(values) - 1)
+                y = bottom - max(0.0, min(scale_high, value)) / scale_high * (bottom - top)
+                points.extend((x, y))
+            color = ORANGE if state["field"] == "ram" else CYAN if state["field"] == "latency" else GREEN
+            chart.create_polygon(left, bottom, *points, right, bottom, fill="#34202a", outline="")
+            chart.create_line(*points, fill=color, width=3, smooth=True)
+            chart.create_oval(points[-2] - 4, points[-1] - 4, points[-2] + 4, points[-1] + 4,
+                              fill=color, outline="")
+            unit = "%" if state["field"] == "ram" else " мс" if state["field"] == "latency" else ""
+            summary.configure(text=f"MIN {low:.1f}{unit}    AVG {sum(values) / len(values):.1f}{unit}    "
+                                   f"MAX {high:.1f}{unit}    NOW {values[-1]:.1f}{unit}")
+
+        def choose(field: str | None = None, seconds: int | None = None) -> None:
+            if field is not None:
+                state["field"] = field
+            if seconds is not None:
+                state["seconds"] = seconds
+            redraw()
+
+        for label, field in (("RAM", "ram"), ("PING", "latency"), ("LOAD", "load")):
+            ttk.Button(controls, text=label, command=lambda value=field: choose(field=value)).pack(side="left", padx=2)
+        for label, seconds in (("1Ч", 3600), ("24Ч", 86400), ("7Д", 604800)):
+            ttk.Button(controls, text=label, command=lambda value=seconds: choose(seconds=value)).pack(side="left", padx=2)
+        chart.bind("<Configure>", redraw)
+        window.after(100, redraw)
+
     def start_leak_test(self) -> None:
         if self._leak_running:
             return
@@ -1327,12 +1512,12 @@ class MonitorApp(tk.Tk):
                  font=("Segoe UI Semibold", 8)).pack(anchor="w", pady=(1, 0))
         return chip
 
-    def _sparkline(self, parent: tk.Widget, values: list[float], row: int, column: int) -> None:
+    def _sparkline(self, parent: tk.Widget, values: list[float], row: int, column: int) -> tk.Canvas:
         canvas = tk.Canvas(parent, width=96, height=31, bg=CARD, highlightthickness=0)
         canvas.grid(row=row, column=column, sticky="e", padx=(8, 0))
         if len(values) < 2:
             canvas.create_text(48, 16, text="история 1ч", fill=MUTED, font=("Segoe UI", 6))
-            return
+            return canvas
         width, height = 94, 29
         canvas.create_line(1, height - 2, width, height - 2, fill=BORDER, width=1)
         points = []
@@ -1344,6 +1529,7 @@ class MonitorApp(tk.Tk):
         canvas.create_oval(points[-2] - 2, points[-1] - 2, points[-2] + 2, points[-1] + 2,
                            fill=ORANGE, outline="")
         canvas.create_text(4, 3, text="RAM 1ч", fill=MUTED, font=("Segoe UI", 5), anchor="nw")
+        return canvas
 
     def _router_card(self, router: RouterSnapshot) -> None:
         card_shell = tk.Frame(self.body, bg=GREEN if router.online else RED, padx=2)
@@ -1384,7 +1570,18 @@ class MonitorApp(tk.Tk):
                  font=("Segoe UI", 8)).pack(side="left")
         graph = tk.Frame(bottom, bg=CARD)
         graph.pack(side="right")
-        self._sparkline(graph, self.history.values("router", "NX31"), 0, 0)
+        spark = self._sparkline(graph, self.history.values("router", "NX31"), 0, 0)
+        spark.configure(cursor="hand2")
+        spark.bind("<Button-1>", lambda _e: self.show_metrics_window("router", "NX31", router.hostname or "NX31"))
+        actions = tk.Frame(card, bg=CARD)
+        actions.pack(fill="x", pady=(8, 0))
+        for label, command in (("ГРАФИК", lambda: self.show_metrics_window("router", "NX31", router.hostname or "NX31")),
+                               ("ПРОВЕРИТЬ IP", self.force_route_check),
+                               ("DNS / IPv6", self.start_leak_test),
+                               ("↻ SING-BOX", self.request_singbox_restart)):
+            tk.Button(actions, text=label, command=command, bg=GLASS, fg=MUTED, bd=0, padx=8, pady=4,
+                      activebackground=CARD_ALT, activeforeground=TEXT,
+                      font=("Segoe UI Semibold", 6), cursor="hand2").pack(side="left", padx=(0, 4))
         self._bind_router_context(card_shell)
 
     def _bind_router_context(self, widget: tk.Widget) -> None:
@@ -1417,6 +1614,7 @@ class MonitorApp(tk.Tk):
                         route: RouteSnapshot) -> None:
         health = {"NX31": router.online and router.singbox_running}
         health.update({node_country_and_name(node.name)[1]: node.connected and not node.disabled for node in nodes})
+        self.history.sync_incidents({**health, "ROUTES": route.healthy})
         current_users = {user.username for user in users}
         if self._previous_health is not None:
             for name, ok in health.items():
@@ -1463,6 +1661,7 @@ class MonitorApp(tk.Tk):
         self._threshold_active = set(active_thresholds)
         self._previous_routes = current_routes
         self._previous_health, self._previous_users = health, current_users
+        self._update_notification_badge()
 
     def _users_section(self, users: list[OnlineUser]) -> None:
         if not self.users_expanded:
@@ -1535,7 +1734,20 @@ class MonitorApp(tk.Tk):
         tk.Label(bottom, text=traffic, bg=CARD, fg=CYAN, font=("Consolas", 8)).pack(side="left")
         graph = tk.Frame(bottom, bg=CARD)
         graph.pack(side="right")
-        self._sparkline(graph, self.history.values("node", node.uuid), 0, 0)
+        spark = self._sparkline(graph, self.history.values("node", node.uuid), 0, 0)
+        spark.configure(cursor="hand2")
+        spark.bind("<Button-1>", lambda _e: self.show_metrics_window("node", node.uuid, clean_name))
+        actions = tk.Frame(card, bg=CARD)
+        actions.pack(fill="x", pady=(8, 0))
+        action_items = (
+            ("ГРАФИК", lambda: self.show_metrics_window("node", node.uuid, clean_name)),
+            ("ТЕСТ СКОРОСТИ", lambda: self.start_speed_test(node)),
+            ("ОБНОВИТЬ", self.refresh_now),
+        )
+        for label, command in action_items:
+            tk.Button(actions, text=label, command=command, bg=GLASS, fg=MUTED, bd=0, padx=8, pady=4,
+                      activebackground=CARD_ALT, activeforeground=TEXT,
+                      font=("Segoe UI Semibold", 6), cursor="hand2").pack(side="left", padx=(0, 4))
         if node.uuid in self._speed_testing or node.uuid in self._speed_results:
             value = "Тест скорости выполняется…" if node.uuid in self._speed_testing else self._speed_results[node.uuid]
             tk.Label(card, text=value, bg=CARD_ALT, fg=ORANGE, font=("Segoe UI Semibold", 8),

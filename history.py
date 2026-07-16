@@ -23,6 +23,13 @@ class HistoryStore:
             )
             self.connection.execute("CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts)")
             self.connection.execute(
+                "CREATE TABLE IF NOT EXISTS incidents ("
+                "id INTEGER PRIMARY KEY AUTOINCREMENT, component TEXT, started INTEGER, ended INTEGER, message TEXT)"
+            )
+            self.connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_incidents_started ON incidents(started)"
+            )
+            self.connection.execute(
                 "CREATE TABLE IF NOT EXISTS device_traffic (ts INTEGER, mac TEXT, rx INTEGER, tx INTEGER)"
             )
             self.connection.execute(
@@ -209,3 +216,41 @@ class HistoryStore:
                 "SELECT ts, level, message FROM events ORDER BY ts DESC LIMIT ?", (limit,)
             ).fetchall()
         return [(int(row[0]), str(row[1]), str(row[2])) for row in rows]
+
+    def events_since(self, timestamp: int, levels: tuple[str, ...] = ("warning", "error", "ok")) -> list[tuple[int, str, str]]:
+        placeholders = ",".join("?" for _ in levels)
+        with self.lock:
+            rows = self.connection.execute(
+                f"SELECT ts, level, message FROM events WHERE ts>? AND level IN ({placeholders}) ORDER BY ts DESC",
+                (timestamp, *levels),
+            ).fetchall()
+        return [(int(ts), str(level), str(message)) for ts, level, message in rows]
+
+    def sync_incidents(self, health: dict[str, bool]) -> None:
+        now = int(time.time())
+        with self.lock, self.connection:
+            open_rows = self.connection.execute(
+                "SELECT id, component FROM incidents WHERE ended IS NULL"
+            ).fetchall()
+            open_incidents = {str(component): int(row_id) for row_id, component in open_rows}
+            for component, healthy in health.items():
+                incident_id = open_incidents.get(component)
+                if not healthy and incident_id is None:
+                    self.connection.execute(
+                        "INSERT INTO incidents(component, started, ended, message) VALUES (?, ?, NULL, ?)",
+                        (component, now, f"{component}: недоступен"),
+                    )
+                elif healthy and incident_id is not None:
+                    self.connection.execute("UPDATE incidents SET ended=? WHERE id=?", (now, incident_id))
+            self.connection.execute("DELETE FROM incidents WHERE started < ?", (now - 30 * 86400,))
+
+    def recent_incidents(self, limit: int = 100) -> list[tuple[int, str, int, int | None, str]]:
+        with self.lock:
+            rows = self.connection.execute(
+                "SELECT id, component, started, ended, message FROM incidents ORDER BY started DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [
+            (int(row_id), str(component), int(started), int(ended) if ended is not None else None, str(message))
+            for row_id, component, started, ended, message in rows
+        ]
