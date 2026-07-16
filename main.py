@@ -23,7 +23,7 @@ from PIL import Image, ImageDraw, ImageTk
 import pystray
 
 from remnawave import ApiError, NodeSnapshot, OnlineUser, RemnawaveClient, tcp_latency
-from openwrt import LanDevice, OpenWrtClient, OpenWrtSshClient, RouterSnapshot
+from openwrt import LanDevice, OpenWrtSshClient, RouterSnapshot
 from nettest import measure_parallel
 from history import HistoryStore
 from routecheck import RouteSnapshot, check_routes
@@ -35,7 +35,7 @@ APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False)
 PROJECT_DIR = APP_DIR.parent if getattr(sys, "frozen", False) and APP_DIR.name.lower() == "dist" else APP_DIR
 CONFIG_PATH = APP_DIR / "config.local.json"
 DEFAULT_ROUTER_KEY = PROJECT_DIR / "keys" / "router_monitor_ed25519"
-APP_VERSION = "2.2.0"
+APP_VERSION = "2.3.0"
 BG = "#0c080d"
 HEADER = "#150c12"
 CARD = "#21131b"
@@ -68,7 +68,6 @@ def default_config() -> dict:
         "opacity": 0.91,
         "router_url": "http://192.168.1.1",
         "router_username": "root",
-        "router_password_dpapi": "",
         "router_ssh_key": str(DEFAULT_ROUTER_KEY),
         "router_ssh_port": 22,
         "compact_mode": False,
@@ -84,6 +83,7 @@ def default_config() -> dict:
         "web_password_dpapi": "",
         "window_x": 30,
         "window_y": 80,
+        "privacy_mode": False,
     }
 
 
@@ -93,6 +93,12 @@ def load_config() -> dict:
         try:
             cfg.update(json.loads(CONFIG_PATH.read_text(encoding="utf-8")))
         except (OSError, json.JSONDecodeError):
+            pass
+    if "router_password_dpapi" in cfg:
+        cfg.pop("router_password_dpapi", None)
+        try:
+            CONFIG_PATH.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+        except OSError:
             pass
     return cfg
 
@@ -154,13 +160,12 @@ class SettingsDialog(tk.Toplevel):
         self.router_user = ttk.Entry(router_auth, width=14)
         self.router_user.pack(side="left")
         self.router_user.insert(0, parent.config.get("router_username", "root"))
-        self.router_password = ttk.Entry(router_auth, width=28, show="•")
-        self.router_password.pack(side="left", padx=(7, 0), fill="x", expand=True)
-        try:
-            self.router_password.insert(0, unprotect(parent.config.get("router_password_dpapi", "")))
-        except Exception:
-            pass
-        ttk.Label(self, text="Логин и пароль роутера (fallback, DPAPI)", foreground=MUTED).grid(row=7, column=0, padx=14, sticky="w")
+        ttk.Label(router_auth, text="SSH-пользователь · только вход по ключу", foreground=GREEN).pack(
+            side="left", padx=(9, 0)
+        )
+        ttk.Label(self, text="Пароль роутера не хранится и не используется", foreground=MUTED).grid(
+            row=7, column=0, padx=14, sticky="w"
+        )
         ttk.Label(self, text="SSH private key / порт").grid(row=8, column=0, padx=14, pady=(10, 4), sticky="w")
         ssh_row = ttk.Frame(self)
         ssh_row.grid(row=9, column=0, padx=14, sticky="ew")
@@ -236,7 +241,7 @@ class SettingsDialog(tk.Toplevel):
         self.parent.config["token_dpapi"] = protect(token)
         self.parent.config["router_url"] = self.router_url.get().strip().rstrip("/")
         self.parent.config["router_username"] = self.router_user.get().strip() or "root"
-        self.parent.config["router_password_dpapi"] = protect(self.router_password.get())
+        self.parent.config.pop("router_password_dpapi", None)
         self.parent.config["router_ssh_key"] = self.router_key.get().strip()
         self.parent.config["router_ssh_port"] = int(self.router_port.get() or 22)
         self.parent.config["refresh_seconds"] = max(5, int(self.refresh.get() or 10))
@@ -287,6 +292,7 @@ class MonitorApp(tk.Tk):
         self._force_route_check = False
         self.users_expanded = True
         self.compact_mode = bool(self.config.get("compact_mode", False))
+        self.privacy_mode = bool(self.config.get("privacy_mode", False))
         self._previous_health: dict[str, bool] | None = None
         self._previous_users: set[str] | None = None
         self._previous_routes: tuple[str, str, str] | None = None
@@ -327,9 +333,7 @@ class MonitorApp(tk.Tk):
             self.after(1200, self._show_new_web_credentials)
         self.after(100, self._poll_result)
         self.after(250, self.refresh_now)
-        has_router_auth = bool(self.config.get("router_password_dpapi")) or Path(
-            self.config.get("router_ssh_key", str(DEFAULT_ROUTER_KEY))
-        ).exists()
+        has_router_auth = Path(self.config.get("router_ssh_key", str(DEFAULT_ROUTER_KEY))).exists()
         if not self.config.get("token_dpapi") or not has_router_auth:
             self.after(500, self.open_settings)
 
@@ -418,6 +422,12 @@ class MonitorApp(tk.Tk):
         self.updated.pack(side="left", padx=12)
         tk.Button(footer, text="⚙", command=self.open_settings, bg=HEADER, fg=MUTED, bd=0,
                   activebackground=HEADER, activeforeground=CYAN, font=("Segoe UI", 11)).pack(side="right", padx=(0, 8))
+        self.privacy_button = tk.Button(
+            footer, text="IP ●" if self.privacy_mode else "IP ◉", command=self.toggle_ip_visibility,
+            bg=HEADER, fg=ORANGE if self.privacy_mode else MUTED, bd=0,
+            activebackground=HEADER, activeforeground=ORANGE, font=("Segoe UI Semibold", 8), cursor="hand2"
+        )
+        self.privacy_button.pack(side="right", padx=2)
         tk.Button(footer, text="↻", command=self.refresh_now, bg=HEADER, fg=MUTED, bd=0,
                   activebackground=HEADER, activeforeground=CYAN, font=("Segoe UI", 12)).pack(side="right", padx=2)
         self.user_toggle = tk.Button(footer, text="ПОЛЬЗОВАТЕЛИ", command=self.toggle_users_or_expand,
@@ -538,13 +548,13 @@ class MonitorApp(tk.Tk):
                 "users": node.users_online, "traffic": node.traffic_bytes,
             })
         users = [{"name": user.username, "node": node_country_and_name(user.node_name)[1],
-                  "device": user.device_label, "ip": user.request_ip or "—"} for user in self._last_users]
+                  "device": user.device_label, "ip": self._display_ip(user.request_ip)} for user in self._last_users]
         devices = []
         for device in self._last_lan_devices:
             alias, trusted = self._device_metadata.get(device.mac, ("", False))
             rx_total, tx_total, rx_rate, tx_rate = self._device_traffic.get(device.mac, (0, 0, 0.0, 0.0))
             devices.append({
-                "name": alias or device.hostname, "ip": device.ip or "—", "connection": device.connection,
+                "name": alias or device.hostname, "ip": self._display_ip(device.ip), "connection": device.connection,
                 "signal": f"{device.signal_dbm} dBm" if device.signal_dbm is not None else "—",
                 "state": device.state, "trusted": trusted, "blocked": device.mac in self._blocked_macs,
                 "rx_total": rx_total, "tx_total": tx_total, "rx_rate": rx_rate, "tx_rate": tx_rate,
@@ -557,10 +567,12 @@ class MonitorApp(tk.Tk):
                        "singbox": self._last_router.singbox_running,
                        "load": f"{self._last_router.load_1m:.2f}" if self._last_router.load_1m is not None else "—",
                        "ram": f"{self._last_router.ram_percent:.0f}%" if self._last_router.ram_percent is not None else "—",
-                       "wan": self._last_router.wan_ip or "—"},
+                       "wan": self._display_ip(self._last_router.wan_ip)},
             "nodes": nodes, "users": users, "devices": devices,
-            "routes": {"direct": self._last_route.direct_ip or "—", "moscow": self._last_route.moscow_ip or "—",
-                       "germany": self._last_route.germany_ip or "—", "healthy": self._last_route.healthy},
+            "routes": {"direct": self._display_ip(self._last_route.direct_ip),
+                       "moscow": self._display_ip(self._last_route.moscow_ip),
+                       "germany": self._display_ip(self._last_route.germany_ip),
+                       "healthy": self._last_route.healthy},
         }
 
     def hide_to_tray(self) -> None:
@@ -602,6 +614,20 @@ class MonitorApp(tk.Tk):
 
     def open_settings(self):
         SettingsDialog(self)
+
+    def _display_ip(self, value: str | None) -> str:
+        if not value:
+            return "—"
+        return "•••.•••.•••.•••" if self.privacy_mode else value
+
+    def toggle_ip_visibility(self, _event=None) -> None:
+        self.privacy_mode = not self.privacy_mode
+        self.config["privacy_mode"] = self.privacy_mode
+        save_config(self.config)
+        self.privacy_button.configure(text="IP ●" if self.privacy_mode else "IP ◉",
+                                      fg=ORANGE if self.privacy_mode else MUTED)
+        self._render_nodes(self._last_nodes, self._last_api_ms, self._last_users, self._last_router,
+                           self._last_route, self._last_remna_error)
 
     def refresh_now(self):
         if self._busy:
@@ -840,6 +866,7 @@ class MonitorApp(tk.Tk):
         for device in devices:
             tree.insert("", "end", iid=device.mac, values=self._lan_device_values(device))
         tree.bind("<Button-3>", self._show_lan_device_menu)
+        tree.bind("<Button-1>", self._toggle_lan_ip_column)
         tree.pack(fill="both", expand=True, padx=12, pady=(0, 12))
 
     def _lan_device_values(self, device: LanDevice) -> tuple:
@@ -857,8 +884,13 @@ class MonitorApp(tk.Tk):
         today = f"{human_bytes(day_rx)} / {human_bytes(day_tx)}" if day_rx or day_tx else "—"
         month = f"{human_bytes(rx_total)} / {human_bytes(tx_total)}" if rx_total or tx_total else "—"
         state = "BLOCKED" if device.mac in self._blocked_macs else device.state
-        return (display_name, device.ip or "—", device.mac, device.connection, signal, speed,
+        return (display_name, self._display_ip(device.ip), device.mac, device.connection, signal, speed,
                 current, today, month, state)
+
+    def _toggle_lan_ip_column(self, event) -> None:
+        if self._lan_tree and self._lan_tree.identify_column(event.x) == "#2":
+            self.toggle_ip_visibility()
+            self._refresh_lan_tree_values()
 
     def _refresh_lan_tree_values(self) -> None:
         if not self._lan_tree or not self._lan_window or not self._lan_window.winfo_exists():
@@ -923,7 +955,8 @@ class MonitorApp(tk.Tk):
         action = "заблокировать" if block else "разблокировать"
         warning = ("Устройство потеряет доступ к интернету и интерфейсу роутера.\n\n" if block else "")
         if not messagebox.askyesno(f"{action.capitalize()} устройство?",
-                                   f"{device.hostname}\n{device.ip} · {device.mac}\n\n{warning}{action.capitalize()} сейчас?",
+                                   f"{device.hostname}\n{self._display_ip(device.ip)} · {device.mac}\n\n"
+                                   f"{warning}{action.capitalize()} сейчас?",
                                    icon="warning" if block else "question"):
             return
         threading.Thread(target=self._device_block_worker, args=(device, block), daemon=True).start()
@@ -955,7 +988,7 @@ class MonitorApp(tk.Tk):
         lines = [f"{device.hostname} · {device.mac}", ""]
         for timestamp, event, hostname, ip in self.history.device_events(device.mac):
             stamp = time.strftime("%d.%m.%Y %H:%M:%S", time.localtime(timestamp))
-            lines.append(f"{stamp}  {event_names.get(event, event)}  {ip or ''}")
+            lines.append(f"{stamp}  {event_names.get(event, event)}  {self._display_ip(ip) if ip else ''}")
         self._show_text_window("История устройства", "\n".join(lines) if len(lines) > 2 else "История пока пуста")
 
     def show_known_devices(self) -> None:
@@ -1238,12 +1271,15 @@ class MonitorApp(tk.Tk):
         else:
             level, summary = "warning", "Возможна DNS или IPv6 утечка"
         self.history.add_event(level, summary)
-        lines = [f"Внешний IP: {result.public_ip or 'не определён'}", "", "DNS resolvers:"]
+        lines = [f"Внешний IP: {self._display_ip(result.public_ip) if result.public_ip else 'не определён'}", "", "DNS resolvers:"]
         if result.resolvers:
-            lines.extend(f"  {resolver.ip}  •  {resolver.country or '—'}  •  {resolver.asn or '—'}" for resolver in result.resolvers)
+            lines.extend(
+                f"  {self._display_ip(resolver.ip)}  •  {resolver.country or '—'}  •  {resolver.asn or '—'}"
+                for resolver in result.resolvers
+            )
         else:
             lines.append("  не обнаружены")
-        lines.extend(["", f"IPv6: {result.ipv6_ip or 'не обнаружен'}", "", summary])
+        lines.extend(["", f"IPv6: {self._display_ip(result.ipv6_ip) if result.ipv6_ip else 'не обнаружен'}", "", summary])
         self._show_text_window("Проверка DNS / IPv6", "\n".join(lines))
         self._render_nodes(self._last_nodes, self._last_api_ms, self._last_users, self._last_router,
                            self._last_route, self._last_remna_error)
@@ -1273,21 +1309,10 @@ class MonitorApp(tk.Tk):
         except Exception as exc:
             remna_error = str(exc)
 
-        router_password = ""
-        try:
-            router_password = unprotect(self.config.get("router_password_dpapi", ""))
-        except Exception:
-            pass
         key_path = Path(self.config.get("router_ssh_key", str(DEFAULT_ROUTER_KEY)))
         router = self._router_ssh_client().snapshot() if key_path.exists() else RouterSnapshot(
             configured=False, error="SSH-ключ NX31 не найден"
         )
-        if not router.online and router_password:
-            router = OpenWrtClient(
-                self.config.get("router_url", "http://192.168.1.1"),
-                self.config.get("router_username", "root"),
-                router_password,
-            ).snapshot()
         device_totals: dict[str, tuple[int, int]] = {}
         lan_devices: list[LanDevice] = []
         blocked_macs: set[str] = set()
@@ -1482,8 +1507,11 @@ class MonitorApp(tk.Tk):
                 cell.grid(row=0, column=index, sticky="ew", padx=(0 if index == 0 else 4, 0))
                 tk.Label(cell, text=label, bg=CARD, fg=MUTED,
                          font=("Segoe UI Semibold", 6)).pack(anchor="w")
-                tk.Label(cell, text=value or "—", bg=CARD, fg=CYAN if route.healthy else MUTED,
-                         font=("Consolas", 7)).pack(anchor="w", pady=(2, 0))
+                ip_label = tk.Label(cell, text=self._display_ip(value), bg=CARD,
+                                    fg=CYAN if route.healthy else MUTED,
+                                    font=("Consolas", 7), cursor="hand2")
+                ip_label.pack(anchor="w", pady=(2, 0))
+                ip_label.bind("<Button-1>", self.toggle_ip_visibility)
                 row.columnconfigure(index, weight=1, uniform="route")
         self._bind_route_context(card)
 
@@ -1559,15 +1587,18 @@ class MonitorApp(tk.Tk):
                 chip = self._metric_chip(metrics, label, value, color)
                 chip.grid(row=0, column=index, sticky="ew", padx=(0 if index == 0 else 4, 0))
                 metrics.columnconfigure(index, weight=1, uniform="router")
-            wan_detail = f"WAN  {router.wan_device or '—'}   ·   {router.wan_ip or '—'}"
+            wan_detail = f"WAN  {router.wan_device or '—'}   ·   {self._display_ip(router.wan_ip)}"
         else:
             wan_detail = "ПКМ → управление роутером"
             tk.Label(card, text=router.error or "NX31 недоступен", bg=CARD, fg=MUTED,
                      font=("Segoe UI", 8), wraplength=390, justify="left").pack(anchor="w", pady=(9, 3))
         bottom = tk.Frame(card, bg=CARD)
         bottom.pack(fill="x")
-        tk.Label(bottom, text=wan_detail, bg=CARD, fg=MUTED,
-                 font=("Segoe UI", 8)).pack(side="left")
+        wan_label = tk.Label(bottom, text=wan_detail, bg=CARD, fg=MUTED,
+                             font=("Segoe UI", 8), cursor="hand2" if router.online else "")
+        wan_label.pack(side="left")
+        if router.online:
+            wan_label.bind("<Button-1>", self.toggle_ip_visibility)
         graph = tk.Frame(bottom, bg=CARD)
         graph.pack(side="right")
         spark = self._sparkline(graph, self.history.values("router", "NX31"), 0, 0)
@@ -1691,9 +1722,12 @@ class MonitorApp(tk.Tk):
             _, clean_node_name = node_country_and_name(user.node_name)
             tk.Label(row, text=f"{clean_node_name}  •  {user.seconds_ago} сек назад", bg=CARD_ALT,
                      fg=GREEN, font=("Segoe UI Semibold", 7)).grid(row=0, column=2, sticky="e")
-            detail = user.device_label + (f"  •  {user.request_ip}" if user.request_ip else "")
-            tk.Label(row, text=detail, bg=CARD_ALT, fg=MUTED, font=("Segoe UI", 8),
-                     anchor="w").grid(row=1, column=1, columnspan=2, sticky="w", pady=(3, 0))
+            detail = user.device_label + (f"  •  {self._display_ip(user.request_ip)}" if user.request_ip else "")
+            detail_label = tk.Label(row, text=detail, bg=CARD_ALT, fg=MUTED, font=("Segoe UI", 8),
+                                    anchor="w", cursor="hand2" if user.request_ip else "")
+            detail_label.grid(row=1, column=1, columnspan=2, sticky="w", pady=(3, 0))
+            if user.request_ip:
+                detail_label.bind("<Button-1>", self.toggle_ip_visibility)
             row.columnconfigure(1, weight=1)
         if len(users) > 6:
             tk.Label(self.body, text=f"Ещё подключений: {len(users) - 6}", bg=BG, fg=MUTED,
