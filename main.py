@@ -35,17 +35,20 @@ APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False)
 PROJECT_DIR = APP_DIR.parent if getattr(sys, "frozen", False) and APP_DIR.name.lower() == "dist" else APP_DIR
 CONFIG_PATH = APP_DIR / "config.local.json"
 DEFAULT_ROUTER_KEY = PROJECT_DIR / "keys" / "router_monitor_ed25519"
-BG = "#10090f"
-HEADER = "#180c13"
-CARD = "#211019"
-CARD_ALT = "#2b1420"
+APP_VERSION = "2.1.0"
+BG = "#0c080d"
+HEADER = "#150c12"
+CARD = "#21131b"
+CARD_ALT = "#2b1722"
+GLASS = "#1a1016"
+BORDER = "#4b2833"
 TEXT = "#fff5f1"
-MUTED = "#b08c92"
+MUTED = "#ae8e96"
 GREEN = "#62e6a7"
-RED = "#ff493d"
-CYAN = "#ffc078"
+RED = "#ff5548"
+CYAN = "#75d8ff"
 PURPLE = "#e060ff"
-ORANGE = "#ff983d"
+ORANGE = "#ffad5c"
 _INSTANCE_MUTEX = None
 
 
@@ -264,7 +267,7 @@ class MonitorApp(tk.Tk):
             self.config["web_password_dpapi"] = protect(self._new_web_password)
             save_config(self.config)
         self.title("StarStack Cascade Monitor")
-        self.geometry(f"420x180+{self.config['window_x']}+{self.config['window_y']}")
+        self.geometry(f"460x210+{self.config['window_x']}+{self.config['window_y']}")
         self.configure(bg=BG)
         self.attributes("-topmost", bool(self.config.get("always_on_top", True)))
         self.attributes("-alpha", float(self.config.get("opacity", 0.94)))
@@ -336,6 +339,8 @@ class MonitorApp(tk.Tk):
         style.configure("TButton", background=CARD_ALT, foreground=TEXT, borderwidth=0, padding=(11, 7))
         style.map("TButton", background=[("active", "#24344a")])
         style.configure("Horizontal.TScale", background=BG, troughcolor=CARD, sliderrelief="flat")
+        style.configure("Monitor.Vertical.TScrollbar", background=CARD_ALT, troughcolor=BG,
+                        bordercolor=BG, arrowcolor=MUTED, width=7)
 
     def _show_new_web_credentials(self) -> None:
         login = self.config.get("web_username", "starstack")
@@ -349,42 +354,80 @@ class MonitorApp(tk.Tk):
         shell.pack(fill="both", expand=True)
         inner = tk.Frame(shell, bg=BG)
         inner.pack(fill="both", expand=True)
-        header = tk.Frame(inner, bg=HEADER, height=43)
+        header = tk.Frame(inner, bg=HEADER, height=62)
         header.pack(fill="x")
+        header.pack_propagate(False)
         header.bind("<ButtonPress-1>", self._drag_start)
         header.bind("<B1-Motion>", self._drag_move)
-        tk.Label(header, text="◈", bg=HEADER, fg=ORANGE,
-                 font=("Segoe UI Semibold", 15)).pack(side="left", padx=(13, 5), pady=7)
+        logo = tk.Frame(header, bg=CARD_ALT, width=36, height=36)
+        logo.pack(side="left", padx=(13, 9), pady=12)
+        logo.pack_propagate(False)
+        tk.Label(logo, text="◇", bg=CARD_ALT, fg=ORANGE,
+                 font=("Segoe UI Semibold", 17)).pack(expand=True)
         title_box = tk.Frame(header, bg=HEADER)
-        title_box.pack(side="left", pady=5)
+        title_box.pack(side="left", pady=10)
         tk.Label(title_box, text="StarStack", bg=HEADER, fg=TEXT,
-                 font=("Segoe UI Semibold", 10)).pack(anchor="w")
-        tk.Label(title_box, text="NEON CASCADE MONITOR", bg=HEADER, fg=RED,
-                 font=("Segoe UI Semibold", 7)).pack(anchor="w")
-        self.overall = tk.Label(header, text="● ПРОВЕРКА", bg=HEADER, fg=MUTED,
-                                font=("Segoe UI Semibold", 9))
-        self.overall.pack(side="right", padx=(0, 8))
+                 font=("Segoe UI Semibold", 11)).pack(anchor="w")
+        tk.Label(title_box, text=f"CASCADE CONTROL  ·  v{APP_VERSION}", bg=HEADER, fg=MUTED,
+                 font=("Segoe UI Semibold", 7)).pack(anchor="w", pady=(2, 0))
+        status_box = tk.Frame(header, bg=GLASS, padx=9, pady=5)
+        status_box.pack(side="right", padx=(0, 7), pady=13)
+        self.status_dot = tk.Label(status_box, text="●", bg=GLASS, fg=MUTED,
+                                   font=("Segoe UI", 8))
+        self.status_dot.pack(side="left", padx=(0, 5))
+        self.overall = tk.Label(status_box, text="ПРОВЕРКА", bg=GLASS, fg=MUTED,
+                                font=("Segoe UI Semibold", 8))
+        self.overall.pack(side="left")
         tk.Button(header, text="×", command=self.hide_to_tray, bg=HEADER, fg=MUTED, bd=0,
                   activebackground=HEADER, activeforeground=TEXT, font=("Segoe UI", 14),
-                  cursor="hand2").pack(side="right", padx=5)
+                  cursor="hand2").pack(side="right", padx=(2, 7))
+        for widget in (logo, title_box, *logo.winfo_children(), *title_box.winfo_children()):
+            widget.bind("<ButtonPress-1>", self._drag_start)
+            widget.bind("<B1-Motion>", self._drag_move)
 
-        self.body = tk.Frame(inner, bg=BG)
-        self.body.pack(fill="both", expand=True, padx=8)
+        content = tk.Frame(inner, bg=BG)
+        content.pack(fill="both", expand=True, padx=(9, 4))
+        self.scroll_canvas = tk.Canvas(content, bg=BG, highlightthickness=0, bd=0)
+        self.scroll_canvas.pack(side="left", fill="both", expand=True)
+        self.scrollbar = ttk.Scrollbar(content, orient="vertical", command=self.scroll_canvas.yview,
+                                       style="Monitor.Vertical.TScrollbar")
+        self.scrollbar.pack(side="right", fill="y", padx=(3, 0))
+        self.scroll_canvas.configure(yscrollcommand=self.scrollbar.set)
+        self.body = tk.Frame(self.scroll_canvas, bg=BG)
+        self._body_window = self.scroll_canvas.create_window((0, 0), window=self.body, anchor="nw")
+        self.body.bind("<Configure>", self._sync_scrollregion)
+        self.scroll_canvas.bind("<Configure>", self._sync_canvas_width)
+        self.bind_all("<MouseWheel>", self._on_mousewheel, add="+")
         self.message = tk.Label(self.body, text="Подключение к Remnawave…", bg=CARD, fg=MUTED,
-                                font=("Segoe UI", 9), justify="left", wraplength=345, padx=12, pady=14)
-        self.message.pack(fill="x", pady=4)
-        footer = tk.Frame(inner, bg=BG)
-        footer.pack(fill="x", padx=10, pady=(2, 7))
+                                font=("Segoe UI", 9), justify="left", wraplength=390, padx=14, pady=16)
+        self.message.pack(fill="x", pady=8)
+        footer = tk.Frame(inner, bg=HEADER, height=40)
+        footer.pack(fill="x")
+        footer.pack_propagate(False)
         self.updated = tk.Label(footer, text="", bg=BG, fg=MUTED, font=("Segoe UI", 8))
-        self.updated.pack(side="left")
-        tk.Button(footer, text="⚙", command=self.open_settings, bg=BG, fg=MUTED, bd=0,
-                  activebackground=BG, activeforeground=CYAN, font=("Segoe UI", 11)).pack(side="right")
-        tk.Button(footer, text="↻", command=self.refresh_now, bg=BG, fg=MUTED, bd=0,
-                  activebackground=BG, activeforeground=CYAN, font=("Segoe UI", 11)).pack(side="right", padx=5)
+        self.updated.configure(bg=HEADER)
+        self.updated.pack(side="left", padx=12)
+        tk.Button(footer, text="⚙", command=self.open_settings, bg=HEADER, fg=MUTED, bd=0,
+                  activebackground=HEADER, activeforeground=CYAN, font=("Segoe UI", 11)).pack(side="right", padx=(0, 8))
+        tk.Button(footer, text="↻", command=self.refresh_now, bg=HEADER, fg=MUTED, bd=0,
+                  activebackground=HEADER, activeforeground=CYAN, font=("Segoe UI", 12)).pack(side="right", padx=2)
         self.user_toggle = tk.Button(footer, text="ПОЛЬЗОВАТЕЛИ", command=self.toggle_users_or_expand,
-                                     bg=BG, fg=ORANGE, bd=0, activebackground=BG,
+                                     bg=HEADER, fg=ORANGE, bd=0, activebackground=HEADER,
                                      activeforeground=TEXT, font=("Segoe UI Semibold", 8), cursor="hand2")
-        self.user_toggle.pack(side="right", padx=8)
+        self.user_toggle.pack(side="right", padx=7)
+
+    def _sync_scrollregion(self, _event=None) -> None:
+        self.scroll_canvas.configure(scrollregion=self.scroll_canvas.bbox("all"))
+
+    def _sync_canvas_width(self, event) -> None:
+        self.scroll_canvas.itemconfigure(self._body_window, width=event.width)
+
+    def _on_mousewheel(self, event) -> None:
+        widget = event.widget
+        while widget is not None and widget is not self.body and widget is not self.scroll_canvas:
+            widget = getattr(widget, "master", None)
+        if widget in (self.body, self.scroll_canvas):
+            self.scroll_canvas.yview_scroll(int(-event.delta / 120), "units")
 
     def _tray_image(self) -> Image.Image:
         image = Image.new("RGBA", (64, 64), (16, 9, 15, 255))
@@ -438,7 +481,9 @@ class MonitorApp(tk.Tk):
             )
             self.web_server.start()
             domain = self.config.get("web_domain", "monitor.example.com")
-            caddyfile = PROJECT_DIR / "Caddyfile"
+            runtime_dir = PROJECT_DIR / "logs"
+            runtime_dir.mkdir(parents=True, exist_ok=True)
+            caddyfile = runtime_dir / "Caddyfile.runtime"
             caddyfile.write_text(
                 "{\n    admin off\n}\n\n"
                 f"{domain} {{\n    encode gzip\n    reverse_proxy 127.0.0.1:{int(self.config.get('web_port', 8765))}\n"
@@ -1131,12 +1176,13 @@ class MonitorApp(tk.Tk):
     def _render_error(self, error: str):
         for child in self.body.winfo_children():
             child.destroy()
-        self.overall.configure(text="● ОШИБКА", fg=RED)
+        self.overall.configure(text="ОШИБКА", fg=RED)
+        self.status_dot.configure(fg=RED)
         self.message = tk.Label(self.body, text=error, bg=CARD, fg=RED, font=("Segoe UI", 9),
                                 justify="left", wraplength=345, padx=12, pady=14)
         self.message.pack(fill="x", pady=4)
         self.updated.configure(text=time.strftime("Ошибка: %H:%M:%S"))
-        self.geometry(f"420x150+{self.winfo_x()}+{self.winfo_y()}")
+        self.geometry(f"460x210+{self.winfo_x()}+{self.winfo_y()}")
 
     def _render_nodes(self, nodes: list[NodeSnapshot], api_ms: float, users: list[OnlineUser],
                       router: RouterSnapshot, route: RouteSnapshot, remna_error: str = ""):
@@ -1148,14 +1194,16 @@ class MonitorApp(tk.Tk):
         now = time.monotonic()
         connected = sum(1 for n in nodes if n.connected and not n.disabled)
         all_ok = router.online and router.singbox_running and bool(nodes) and connected == len(nodes)
-        self.overall.configure(text="● КАСКАД OK" if all_ok else "● НУЖНА ПРОВЕРКА", fg=GREEN if all_ok else RED)
+        self.overall.configure(text="КАСКАД OK" if all_ok else "НУЖНА ПРОВЕРКА", fg=GREEN if all_ok else RED)
+        self.status_dot.configure(fg=GREEN if all_ok else RED)
         self._cascade_strip(router, nodes)
         self._route_card(route)
         self._router_card(router)
         if self.compact_mode:
             self.user_toggle.configure(text="РАЗВЕРНУТЬ")
             self.updated.configure(text=f"обновлено {time.strftime('%H:%M:%S')}")
-            self.geometry(f"420x265+{self.winfo_x()}+{self.winfo_y()}")
+            self.geometry(f"460x300+{self.winfo_x()}+{self.winfo_y()}")
+            self.after_idle(self._sync_scrollregion)
             self._notify_changes(router, nodes, users, route)
             return
         if remna_error:
@@ -1174,16 +1222,21 @@ class MonitorApp(tk.Tk):
         self._users_section(users)
         self.user_toggle.configure(text=f"ПОЛЬЗОВАТЕЛИ {len(users)}  {'▴' if self.users_expanded else '▾'}")
         self.updated.configure(text=f"API {api_ms:.0f} мс  •  обновлено {time.strftime('%H:%M:%S')}")
-        users_height = (37 + min(len(users), 6) * 52) if self.users_expanded else 0
-        error_height = 45 if remna_error or not nodes else 0
-        speed_height = sum(21 for node in nodes if node.uuid in self._speed_testing or node.uuid in self._speed_results)
-        height = 285 + len(nodes) * 101 + users_height + error_height + speed_height
-        self.geometry(f"420x{height}+{self.winfo_x()}+{self.winfo_y()}")
+        self.geometry(f"460x640+{self.winfo_x()}+{self.winfo_y()}")
+        self.after_idle(self._sync_scrollregion)
         self._notify_changes(router, nodes, users, route)
 
     def _cascade_strip(self, router: RouterSnapshot, nodes: list[NodeSnapshot]) -> None:
-        row = tk.Frame(self.body, bg=HEADER, padx=8, pady=9)
-        row.pack(fill="x", pady=(5, 3))
+        card = tk.Frame(self.body, bg=GLASS, padx=10, pady=9)
+        card.pack(fill="x", pady=(8, 4))
+        heading = tk.Frame(card, bg=GLASS)
+        heading.pack(fill="x", pady=(0, 7))
+        tk.Label(heading, text="LIVE ROUTE", bg=GLASS, fg=MUTED,
+                 font=("Segoe UI Semibold", 7)).pack(side="left")
+        tk.Label(heading, text="REAL-TIME", bg=GLASS, fg=GREEN,
+                 font=("Segoe UI Semibold", 7)).pack(side="right")
+        row = tk.Frame(card, bg=GLASS)
+        row.pack(fill="x")
         moscow = next((n for n in nodes if "mos" in n.name.lower() or n.name.lower().startswith("ru")), None)
         germany = next((n for n in nodes if "ger" in n.name.lower() or n.name.lower().startswith("de")), None)
         points = [
@@ -1193,15 +1246,16 @@ class MonitorApp(tk.Tk):
         ]
         for index, (name, ok, country) in enumerate(points):
             if index:
-                tk.Label(row, text="━━▶", bg=HEADER, fg=ORANGE if ok else MUTED,
-                         font=("Consolas", 8)).pack(side="left", expand=True)
-            box = tk.Frame(row, bg=CARD_ALT, padx=8, pady=5)
+                tk.Label(row, text="━━━━▶", bg=GLASS, fg=ORANGE if ok else MUTED,
+                         font=("Consolas", 7)).pack(side="left", expand=True)
+            box = tk.Frame(row, bg=CARD_ALT, padx=8, pady=7, width=105, height=34)
             box.pack(side="left")
+            box.pack_propagate(False)
             tk.Label(box, text="●", bg=CARD_ALT, fg=GREEN if ok else RED,
                      font=("Segoe UI", 8)).pack(side="left")
             flag = self._flag_image(country) if country else None
             tk.Label(box, text=name, image=flag, compound="left", bg=CARD_ALT, fg=TEXT,
-                     font=("Segoe UI Semibold", 7)).pack(side="left", padx=(3, 0))
+                     font=("Segoe UI Semibold", 7)).pack(side="left", padx=(4, 0))
 
     def _flag_image(self, country: str | None) -> ImageTk.PhotoImage | None:
         if not country:
@@ -1224,19 +1278,28 @@ class MonitorApp(tk.Tk):
         return result
 
     def _route_card(self, route: RouteSnapshot) -> None:
-        card = tk.Frame(self.body, bg=HEADER, padx=9, pady=7)
-        card.pack(fill="x", pady=3)
+        card = tk.Frame(self.body, bg=GLASS, padx=10, pady=9)
+        card.pack(fill="x", pady=4)
         status = "МАРШРУТЫ OK" if route.healthy else "ПРОВЕРКА МАРШРУТОВ"
         if self._last_leak:
             status += "   •   DNS/IPv6 " + ("OK" if self._last_leak.safe else "CHECK")
-        tk.Label(card, text=status, bg=HEADER, fg=GREEN if route.healthy else RED,
+        tk.Label(card, text=status, bg=GLASS, fg=GREEN if route.healthy else RED,
                  font=("Segoe UI Semibold", 7)).pack(anchor="w")
         if route.error:
-            value = "Ошибка проверки: " + route.error
+            tk.Label(card, text="Ошибка проверки: " + route.error, bg=GLASS, fg=MUTED,
+                     font=("Segoe UI", 8), wraplength=400, justify="left").pack(anchor="w", pady=(6, 0))
         else:
-            value = f"DIRECT {route.direct_ip or '—'}   •   MOSCOW {route.moscow_ip or '—'}   •   GERMANY {route.germany_ip or '—'}"
-        tk.Label(card, text=value, bg=HEADER, fg=CYAN if route.healthy else MUTED,
-                 font=("Consolas", 7), wraplength=380, justify="left").pack(anchor="w", pady=(3, 0))
+            values = (("DIRECT", route.direct_ip), ("MOSCOW", route.moscow_ip), ("GERMANY", route.germany_ip))
+            row = tk.Frame(card, bg=GLASS)
+            row.pack(fill="x", pady=(6, 0))
+            for index, (label, value) in enumerate(values):
+                cell = tk.Frame(row, bg=CARD, padx=8, pady=5)
+                cell.grid(row=0, column=index, sticky="ew", padx=(0 if index == 0 else 4, 0))
+                tk.Label(cell, text=label, bg=CARD, fg=MUTED,
+                         font=("Segoe UI Semibold", 6)).pack(anchor="w")
+                tk.Label(cell, text=value or "—", bg=CARD, fg=CYAN if route.healthy else MUTED,
+                         font=("Consolas", 7)).pack(anchor="w", pady=(2, 0))
+                row.columnconfigure(index, weight=1, uniform="route")
         self._bind_route_context(card)
 
     def _bind_route_context(self, widget: tk.Widget) -> None:
@@ -1256,46 +1319,73 @@ class MonitorApp(tk.Tk):
         finally:
             menu.grab_release()
 
+    def _metric_chip(self, parent: tk.Widget, label: str, value: str, color: str = TEXT) -> tk.Frame:
+        chip = tk.Frame(parent, bg=CARD_ALT, padx=7, pady=4)
+        tk.Label(chip, text=label.upper(), bg=CARD_ALT, fg=MUTED,
+                 font=("Segoe UI Semibold", 6)).pack(anchor="w")
+        tk.Label(chip, text=value, bg=CARD_ALT, fg=color,
+                 font=("Segoe UI Semibold", 8)).pack(anchor="w", pady=(1, 0))
+        return chip
+
     def _sparkline(self, parent: tk.Widget, values: list[float], row: int, column: int) -> None:
-        canvas = tk.Canvas(parent, width=78, height=24, bg=CARD, highlightthickness=0)
-        canvas.grid(row=row, column=column, sticky="e", padx=(6, 0))
+        canvas = tk.Canvas(parent, width=96, height=31, bg=CARD, highlightthickness=0)
+        canvas.grid(row=row, column=column, sticky="e", padx=(8, 0))
         if len(values) < 2:
-            canvas.create_text(39, 12, text="история 1ч", fill=MUTED, font=("Segoe UI", 6))
+            canvas.create_text(48, 16, text="история 1ч", fill=MUTED, font=("Segoe UI", 6))
             return
-        width, height = 76, 22
+        width, height = 94, 29
+        canvas.create_line(1, height - 2, width, height - 2, fill=BORDER, width=1)
         points = []
         for index, value in enumerate(values):
             x = 1 + index * (width - 2) / max(1, len(values) - 1)
             y = height - 1 - max(0, min(100, value)) / 100 * (height - 3)
             points.extend((x, y))
         canvas.create_line(*points, fill=ORANGE, width=2, smooth=True)
+        canvas.create_oval(points[-2] - 2, points[-1] - 2, points[-2] + 2, points[-1] + 2,
+                           fill=ORANGE, outline="")
         canvas.create_text(4, 3, text="RAM 1ч", fill=MUTED, font=("Segoe UI", 5), anchor="nw")
 
     def _router_card(self, router: RouterSnapshot) -> None:
-        card = tk.Frame(self.body, bg=CARD, padx=11, pady=8)
-        card.pack(fill="x", pady=3)
+        card_shell = tk.Frame(self.body, bg=GREEN if router.online else RED, padx=2)
+        card_shell.pack(fill="x", pady=4)
+        card = tk.Frame(card_shell, bg=CARD, padx=12, pady=10)
+        card.pack(fill="x")
         status = "ONLINE" if router.online else "НЕ НАСТРОЕН" if not router.configured else "OFFLINE"
-        tk.Label(card, text=f"▰  {router.hostname or 'NX31'}", bg=CARD, fg=TEXT,
-                 font=("Segoe UI Semibold", 9)).grid(row=0, column=0, sticky="w")
-        tk.Label(card, text=status, bg=CARD, fg=GREEN if router.online else RED,
-                 font=("Segoe UI Semibold", 8)).grid(row=0, column=1, sticky="e")
+        title = tk.Frame(card, bg=CARD)
+        title.pack(fill="x")
+        tk.Label(title, text="▰", bg=CARD, fg=CYAN,
+                 font=("Segoe UI Semibold", 9)).pack(side="left")
+        tk.Label(title, text=router.hostname or "NX31", bg=CARD, fg=TEXT,
+                 font=("Segoe UI Semibold", 10)).pack(side="left", padx=6)
+        tk.Label(title, text=status, bg=CARD_ALT, fg=GREEN if router.online else RED,
+                 padx=7, pady=2, font=("Segoe UI Semibold", 7)).pack(side="right")
         if router.online:
-            load = f"Load {router.load_1m:.2f}" if router.load_1m is not None else "Load —"
-            ram = f"RAM {router.ram_percent:.0f}%" if router.ram_percent is not None else "RAM —"
-            service = "sing-box ●" if router.singbox_running else "sing-box ✕"
-            watchdog = "WD ●" if self.config.get("watchdog_enabled", True) else "WD OFF"
-            detail = f"{router.access_method or 'LuCI'}   •   {service}   •   {watchdog}   •   {load}   •   {ram}"
-            wan_detail = f"WAN {router.wan_device or '—'}   •   {router.wan_ip or '—'}"
+            load = f"{router.load_1m:.2f}" if router.load_1m is not None else "—"
+            ram = f"{router.ram_percent:.0f}%" if router.ram_percent is not None else "—"
+            service = "RUNNING" if router.singbox_running else "STOPPED"
+            access = router.access_method or "LuCI"
+            metrics = tk.Frame(card, bg=CARD)
+            metrics.pack(fill="x", pady=(9, 7))
+            for index, (label, value, color) in enumerate((
+                ("ACCESS", access, CYAN), ("SING-BOX", service, GREEN if router.singbox_running else RED),
+                ("LOAD", load, TEXT), ("RAM", ram, TEXT),
+            )):
+                chip = self._metric_chip(metrics, label, value, color)
+                chip.grid(row=0, column=index, sticky="ew", padx=(0 if index == 0 else 4, 0))
+                metrics.columnconfigure(index, weight=1, uniform="router")
+            wan_detail = f"WAN  {router.wan_device or '—'}   ·   {router.wan_ip or '—'}"
         else:
-            detail = router.error or "NX31 недоступен"
             wan_detail = "ПКМ → управление роутером"
-        tk.Label(card, text=detail, bg=CARD, fg=CYAN if router.online else MUTED,
-                 font=("Segoe UI", 8)).grid(row=1, column=0, sticky="w", pady=(4, 0))
-        tk.Label(card, text=wan_detail, bg=CARD, fg=MUTED,
-                 font=("Segoe UI", 8)).grid(row=2, column=0, sticky="w", pady=(3, 0))
-        self._sparkline(card, self.history.values("router", "NX31"), 1, 1)
-        card.columnconfigure(0, weight=1)
-        self._bind_router_context(card)
+            tk.Label(card, text=router.error or "NX31 недоступен", bg=CARD, fg=MUTED,
+                     font=("Segoe UI", 8), wraplength=390, justify="left").pack(anchor="w", pady=(9, 3))
+        bottom = tk.Frame(card, bg=CARD)
+        bottom.pack(fill="x")
+        tk.Label(bottom, text=wan_detail, bg=CARD, fg=MUTED,
+                 font=("Segoe UI", 8)).pack(side="left")
+        graph = tk.Frame(bottom, bg=CARD)
+        graph.pack(side="right")
+        self._sparkline(graph, self.history.values("router", "NX31"), 0, 0)
+        self._bind_router_context(card_shell)
 
     def _bind_router_context(self, widget: tk.Widget) -> None:
         widget.bind("<Button-3>", self._show_router_menu)
@@ -1378,26 +1468,30 @@ class MonitorApp(tk.Tk):
         if not self.users_expanded:
             return
         title = tk.Frame(self.body, bg=BG)
-        title.pack(fill="x", pady=(8, 2))
-        tk.Label(title, text="ПОДКЛЮЧЕНЫ СЕЙЧАС", bg=BG, fg=ORANGE,
-                 font=("Segoe UI Semibold", 8)).pack(side="left", padx=3)
-        tk.Label(title, text=str(len(users)), bg=RED, fg=TEXT, padx=6,
-                 font=("Segoe UI Semibold", 8)).pack(side="left", padx=5)
+        title.pack(fill="x", pady=(10, 4))
+        tk.Label(title, text="ACTIVE CONNECTIONS", bg=BG, fg=MUTED,
+                 font=("Segoe UI Semibold", 7)).pack(side="left", padx=3)
+        tk.Label(title, text=str(len(users)), bg=CARD_ALT, fg=ORANGE, padx=7, pady=2,
+                 font=("Segoe UI Semibold", 8)).pack(side="left", padx=6)
         if not users:
             tk.Label(self.body, text="Активных подключений не обнаружено", bg=CARD, fg=MUTED,
-                     font=("Segoe UI", 8), padx=11, pady=10).pack(fill="x", pady=2)
+                     font=("Segoe UI", 8), padx=12, pady=12).pack(fill="x", pady=2)
             return
         for user in users[:6]:
-            row = tk.Frame(self.body, bg=CARD_ALT, padx=10, pady=7)
+            row = tk.Frame(self.body, bg=CARD_ALT, padx=10, pady=8)
             row.pack(fill="x", pady=2)
             platform = (user.platform or "").lower()
             icon = "▣" if "windows" in platform else "◆" if "android" in platform else "●" if "ios" in platform else "◇"
-            tk.Label(row, text=icon, bg=CARD_ALT, fg=RED, font=("Segoe UI Semibold", 11)).grid(row=0, column=0, rowspan=2, padx=(0, 8))
+            badge = tk.Frame(row, bg=GLASS, width=32, height=32)
+            badge.grid(row=0, column=0, rowspan=2, padx=(0, 9))
+            badge.grid_propagate(False)
+            tk.Label(badge, text=icon, bg=GLASS, fg=CYAN,
+                     font=("Segoe UI Semibold", 11)).place(relx=.5, rely=.5, anchor="center")
             tk.Label(row, text=user.username, bg=CARD_ALT, fg=TEXT,
                      font=("Segoe UI Semibold", 9)).grid(row=0, column=1, sticky="w")
             _, clean_node_name = node_country_and_name(user.node_name)
             tk.Label(row, text=f"{clean_node_name}  •  {user.seconds_ago} сек назад", bg=CARD_ALT,
-                     fg=GREEN, font=("Segoe UI", 8)).grid(row=0, column=2, sticky="e")
+                     fg=GREEN, font=("Segoe UI Semibold", 7)).grid(row=0, column=2, sticky="e")
             detail = user.device_label + (f"  •  {user.request_ip}" if user.request_ip else "")
             tk.Label(row, text=detail, bg=CARD_ALT, fg=MUTED, font=("Segoe UI", 8),
                      anchor="w").grid(row=1, column=1, columnspan=2, sticky="w", pady=(3, 0))
@@ -1407,31 +1501,45 @@ class MonitorApp(tk.Tk):
                      font=("Segoe UI", 8)).pack(pady=3)
 
     def _node_card(self, node: NodeSnapshot, rate: float | None):
-        card_shell = tk.Frame(self.body, bg=ORANGE if node.connected and not node.disabled else RED, padx=2)
-        card_shell.pack(fill="x", pady=4)
-        card = tk.Frame(card_shell, bg=CARD, padx=12, pady=9)
-        card.pack(fill="x")
         is_up = node.connected and not node.disabled
+        card_shell = tk.Frame(self.body, bg=GREEN if is_up else RED, padx=2)
+        card_shell.pack(fill="x", pady=4)
+        card = tk.Frame(card_shell, bg=CARD, padx=12, pady=10)
+        card.pack(fill="x")
         country, clean_name = node_country_and_name(node.name)
         flag = self._flag_image(country)
-        tk.Label(card, text=f"  {clean_name}", image=flag, compound="left", bg=CARD, fg=TEXT,
-                 font=("Segoe UI Semibold", 10)).grid(row=0, column=0, sticky="w")
-        tk.Label(card, text="ONLINE" if is_up else "OFFLINE", bg=CARD, fg=GREEN if is_up else RED,
-                 font=("Segoe UI Semibold", 9)).grid(row=0, column=1, sticky="e")
+        title = tk.Frame(card, bg=CARD)
+        title.pack(fill="x")
+        tk.Label(title, text=f"  {clean_name}", image=flag, compound="left", bg=CARD, fg=TEXT,
+                 font=("Segoe UI Semibold", 10)).pack(side="left")
+        tk.Label(title, text="ONLINE" if is_up else "OFFLINE", bg=CARD_ALT,
+                 fg=GREEN if is_up else RED, padx=7, pady=2,
+                 font=("Segoe UI Semibold", 7)).pack(side="right")
         latency = f"{node.latency_ms:.0f} мс" if node.latency_ms is not None else "API online" if is_up else "нет ответа"
-        load = f"CPU {node.cpu_percent:.0f}%" if node.cpu_percent is not None else f"Load {node.load_1m:.2f}" if node.load_1m is not None else "CPU —"
-        ram = f"RAM {node.ram_percent:.0f}%" if node.ram_percent is not None else "RAM —"
-        details = f"{latency}   •   {load}   •   {ram}   •   👤 {node.users_online}"
-        tk.Label(card, text=details, bg=CARD, fg=MUTED, font=("Segoe UI", 8)).grid(row=1, column=0, sticky="w", pady=(4, 0))
-        traffic = f"Сейчас {human_rate(rate)}   •   Всего {human_bytes(node.traffic_bytes)}"
-        tk.Label(card, text=traffic, bg=CARD, fg=CYAN, font=("Segoe UI", 8)).grid(row=2, column=0, sticky="w", pady=(3, 0))
-        self._sparkline(card, self.history.values("node", node.uuid), 1, 1)
+        load = f"{node.cpu_percent:.0f}%" if node.cpu_percent is not None else f"{node.load_1m:.2f}" if node.load_1m is not None else "—"
+        load_label = "CPU" if node.cpu_percent is not None else "LOAD"
+        ram = f"{node.ram_percent:.0f}%" if node.ram_percent is not None else "—"
+        metrics = tk.Frame(card, bg=CARD)
+        metrics.pack(fill="x", pady=(9, 7))
+        latency_color = GREEN if is_up and (node.latency_ms is None or node.latency_ms < 150) else ORANGE if is_up else RED
+        for index, (label, value, color) in enumerate((
+            ("PING", latency, latency_color), (load_label, load, TEXT),
+            ("RAM", ram, TEXT), ("USERS", str(node.users_online), CYAN),
+        )):
+            chip = self._metric_chip(metrics, label, value, color)
+            chip.grid(row=0, column=index, sticky="ew", padx=(0 if index == 0 else 4, 0))
+            metrics.columnconfigure(index, weight=1, uniform="node")
+        bottom = tk.Frame(card, bg=CARD)
+        bottom.pack(fill="x")
+        traffic = f"↓↑  {human_rate(rate)}   ·   TOTAL  {human_bytes(node.traffic_bytes)}"
+        tk.Label(bottom, text=traffic, bg=CARD, fg=CYAN, font=("Consolas", 8)).pack(side="left")
+        graph = tk.Frame(bottom, bg=CARD)
+        graph.pack(side="right")
+        self._sparkline(graph, self.history.values("node", node.uuid), 0, 0)
         if node.uuid in self._speed_testing or node.uuid in self._speed_results:
             value = "Тест скорости выполняется…" if node.uuid in self._speed_testing else self._speed_results[node.uuid]
-            tk.Label(card, text=value, bg=CARD, fg=ORANGE, font=("Segoe UI Semibold", 8)).grid(
-                row=3, column=0, columnspan=2, sticky="w", pady=(5, 0)
-            )
-        card.columnconfigure(0, weight=1)
+            tk.Label(card, text=value, bg=CARD_ALT, fg=ORANGE, font=("Segoe UI Semibold", 8),
+                     padx=8, pady=5).pack(fill="x", pady=(7, 0))
         self._bind_node_context(card_shell, node)
 
     def _bind_node_context(self, widget: tk.Widget, node: NodeSnapshot) -> None:
