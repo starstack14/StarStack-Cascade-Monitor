@@ -232,6 +232,25 @@ class OpenWrtSshClient:
             raise OpenWrtError("NX31 вернул пустую резервную копию")
         return data
 
+    def restore_system_backup(self, backup_file: Path) -> None:
+        if not backup_file.exists() or backup_file.stat().st_size < 512:
+            raise OpenWrtError("Файл резервной копии отсутствует или слишком мал")
+        known_hosts = str(Path(self.private_key).with_name("known_hosts"))
+        remote_path = "/tmp/starstack-restore.tar.gz"
+        result = subprocess.run(
+            ["scp.exe", "-i", self.private_key, "-P", str(self.port), "-o", "BatchMode=yes",
+             "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=yes", f"-oUserKnownHostsFile={known_hosts}",
+             str(backup_file), f"{self.username}@{self.host}:{remote_path}"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        if result.returncode != 0:
+            raise OpenWrtError(result.stderr.strip() or "Не удалось загрузить backup на NX31")
+        self._text_command(
+            f"nohup sh -c 'sleep 2; sysupgrade -r {remote_path} >/tmp/starstack-restore.log 2>&1' >/dev/null 2>&1 &",
+            timeout=15,
+        )
+
     def collect_singbox_diagnostics(self) -> str:
         return self._text_command(
             "{ "

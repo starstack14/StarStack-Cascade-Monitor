@@ -12,9 +12,12 @@ import threading
 import time
 import tkinter as tk
 import re
+import ssl
 import webbrowser
 import ctypes
 import zipfile
+import winsound
+from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from tkinter import messagebox, simpledialog, ttk
@@ -37,7 +40,7 @@ APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False)
 PROJECT_DIR = APP_DIR.parent if getattr(sys, "frozen", False) and APP_DIR.name.lower() == "dist" else APP_DIR
 CONFIG_PATH = APP_DIR / "config.local.json"
 DEFAULT_ROUTER_KEY = PROJECT_DIR / "keys" / "router_monitor_ed25519"
-APP_VERSION = "2.6.0"
+APP_VERSION = "2.7.0"
 BG = "#0c080d"
 HEADER = "#150c12"
 CARD = "#21131b"
@@ -99,6 +102,9 @@ def default_config() -> dict:
             "MOSCOW": "https://habr.com/",
             "GERMANY": "https://github.com/",
         },
+        "active_profile": "home",
+        "critical_sound": True,
+        "tls_check_hours": 12,
     }
 
 
@@ -258,8 +264,34 @@ class SettingsDialog(tk.Toplevel):
         ttk.Label(self, text="IP раскрываются временно; web-панель выйдет без действий пользователя", foreground=MUTED).grid(
             row=26, column=0, padx=14, sticky="w"
         )
+        profile_row = ttk.Frame(self)
+        profile_row.grid(row=27, column=0, padx=14, pady=(10, 0), sticky="w")
+        ttk.Label(profile_row, text="Профиль").pack(side="left")
+        self.profile = ttk.Combobox(profile_row, values=("home", "demo", "diagnostic"), state="readonly", width=14)
+        self.profile.pack(side="left", padx=(8, 14))
+        self.profile.set(parent.config.get("active_profile", "home"))
+        self.critical_sound = tk.BooleanVar(value=bool(parent.config.get("critical_sound", True)))
+        ttk.Checkbutton(profile_row, text="Звук при критическом сбое", variable=self.critical_sound).pack(side="left")
+        ttk.Label(self, text="Тестовые сайты: Direct / Moscow / Germany", foreground=MUTED).grid(
+            row=28, column=0, padx=14, pady=(10, 3), sticky="w"
+        )
+        sites = parent.config.get("route_test_sites", {})
+        site_row = ttk.Frame(self)
+        site_row.grid(row=29, column=0, padx=14, sticky="ew")
+        self.site_direct = ttk.Entry(site_row, width=17)
+        self.site_direct.pack(side="left", fill="x", expand=True)
+        self.site_direct.insert(0, sites.get("DIRECT", ""))
+        self.site_moscow = ttk.Entry(site_row, width=17)
+        self.site_moscow.pack(side="left", padx=5, fill="x", expand=True)
+        self.site_moscow.insert(0, sites.get("MOSCOW", ""))
+        self.site_germany = ttk.Entry(site_row, width=17)
+        self.site_germany.pack(side="left", fill="x", expand=True)
+        self.site_germany.insert(0, sites.get("GERMANY", ""))
+        ttk.Label(self, text="URL должны начинаться с https://", foreground=MUTED).grid(
+            row=30, column=0, padx=14, sticky="w"
+        )
         buttons = ttk.Frame(self)
-        buttons.grid(row=27, column=0, padx=14, pady=14, sticky="e")
+        buttons.grid(row=31, column=0, padx=14, pady=14, sticky="e")
         ttk.Button(buttons, text="Отмена", command=self.destroy).pack(side="left", padx=(0, 8))
         ttk.Button(buttons, text="Сохранить", command=self.save).pack(side="left")
 
@@ -284,6 +316,14 @@ class SettingsDialog(tk.Toplevel):
         self.parent.config["web_password_dpapi"] = protect(self.web_password.get())
         self.parent.config["privacy_auto_lock_seconds"] = max(30, min(60, int(self.privacy_auto_lock.get() or 45)))
         self.parent.config["web_idle_minutes"] = max(1, min(60, int(self.web_idle_minutes.get() or 5)))
+        self.parent.config["active_profile"] = self.profile.get() or "home"
+        self.parent.config["critical_sound"] = bool(self.critical_sound.get())
+        self.parent.config["route_test_sites"] = {
+            "DIRECT": self.site_direct.get().strip(),
+            "MOSCOW": self.site_moscow.get().strip(),
+            "GERMANY": self.site_germany.get().strip(),
+        }
+        self.parent.history.add_event("info", "ACTION: настройки сохранены")
         save_config(self.parent.config)
         self.parent.attributes("-alpha", self.parent.config["opacity"])
         self.destroy()
@@ -336,6 +376,8 @@ class MonitorApp(tk.Tk):
         self._last_update_check = 0.0
         self._update_window: tk.Toplevel | None = None
         self._update_info: dict[str, str] = {}
+        self._tls_info: dict[str, str] = {}
+        self._last_tls_check = 0.0
         self._previous_health: dict[str, bool] | None = None
         self._previous_users: set[str] | None = None
         self._previous_routes: tuple[str, str, str] | None = None
@@ -377,6 +419,7 @@ class MonitorApp(tk.Tk):
             self.after(500, self._schedule_ip_auto_lock)
         self._start_tray()
         self._start_web_panel()
+        self.after(5000, lambda: self.check_tls_certificate(manual=False))
         if self.config.get("second_screen_enabled", False):
             self.after(300, self.show_second_screen)
         self.after(2500, lambda: self.check_for_updates(manual=False))
@@ -518,15 +561,24 @@ class MonitorApp(tk.Tk):
             pystray.MenuItem("Проверить выходные IP", lambda: self.after(0, self.force_route_check)),
             pystray.MenuItem("Проверить сайты по маршрутам", lambda: self.after(0, self.start_site_checks)),
             pystray.MenuItem("Проверить DNS / IPv6", lambda: self.after(0, self.start_leak_test)),
+            pystray.MenuItem("Проверить TLS-сертификат", lambda: self.after(0, lambda: self.check_tls_certificate(manual=True))),
             pystray.MenuItem("Центр уведомлений", lambda: self.after(0, self.show_notification_center)),
             pystray.MenuItem("Таймлайн инцидентов", lambda: self.after(0, self.show_incident_timeline)),
             pystray.MenuItem("Журнал событий", lambda: self.after(0, self.show_event_log)),
+            pystray.MenuItem("Журнал действий", lambda: self.after(0, self.show_action_log)),
+            pystray.MenuItem("Недельный отчёт", lambda: self.after(0, self.show_weekly_report)),
             pystray.MenuItem("Устройства домашней сети", lambda: self.after(0, self.show_lan_devices)),
             pystray.MenuItem("Все известные устройства", lambda: self.after(0, self.show_known_devices)),
             pystray.MenuItem("Компактный режим", lambda: self.after(0, self.toggle_compact),
                              checked=lambda item: self.compact_mode),
             pystray.MenuItem("Режим демонстрации (Ctrl+Shift+H)", lambda: self.after(0, self.toggle_demo_mode),
                              checked=lambda item: self.demo_mode),
+            pystray.MenuItem("Профиль Дом", lambda: self.after(0, lambda: self.apply_profile("home")),
+                             checked=lambda item: self.config.get("active_profile") == "home"),
+            pystray.MenuItem("Профиль Демонстрация", lambda: self.after(0, lambda: self.apply_profile("demo")),
+                             checked=lambda item: self.config.get("active_profile") == "demo"),
+            pystray.MenuItem("Профиль Диагностика", lambda: self.after(0, lambda: self.apply_profile("diagnostic")),
+                             checked=lambda item: self.config.get("active_profile") == "diagnostic"),
             pystray.MenuItem("Второй компактный экран", lambda: self.after(0, self.toggle_second_screen),
                              checked=lambda item: bool(self._second_window and self._second_window.winfo_exists())),
             pystray.MenuItem("Проверить обновления", lambda: self.after(0, lambda: self.check_for_updates(manual=True))),
@@ -534,6 +586,7 @@ class MonitorApp(tk.Tk):
             pystray.MenuItem("Журнал sing-box", lambda: self.after(0, self.show_singbox_log)),
             pystray.MenuItem("Папка диагностики watchdog", lambda: self.after(0, self.open_diagnostics_folder)),
             pystray.MenuItem("Создать резервную копию", lambda: self.after(0, self.create_backup)),
+            pystray.MenuItem("Восстановить NX31 из backup…", lambda: self.after(0, self.request_backup_restore)),
             pystray.MenuItem("Открыть папку резервных копий", lambda: self.after(0, self.open_backup_folder)),
             pystray.MenuItem("Перезапустить sing-box…", lambda: self.after(0, self.request_singbox_restart)),
             pystray.MenuItem("Перезагрузить NX31…", lambda: self.after(0, self.request_router_reboot)),
@@ -595,6 +648,47 @@ class MonitorApp(tk.Tk):
 
     def open_web_panel(self) -> None:
         webbrowser.open("https://" + self.config.get("web_domain", "monitor.example.com"))
+
+    def check_tls_certificate(self, manual: bool = True) -> None:
+        now = time.monotonic()
+        interval = max(1, int(self.config.get("tls_check_hours", 12))) * 3600
+        if not manual and self._last_tls_check and now - self._last_tls_check < interval:
+            return
+        self._last_tls_check = now
+        threading.Thread(target=self._tls_check_worker, args=(manual,), daemon=True).start()
+
+    def _tls_check_worker(self, manual: bool) -> None:
+        domain = str(self.config.get("web_domain", "")).strip().split(":")[0]
+        try:
+            context = ssl.create_default_context()
+            with socket.create_connection((domain, 443), timeout=12) as connection:
+                with context.wrap_socket(connection, server_hostname=domain) as tls_socket:
+                    certificate = tls_socket.getpeercert()
+            expiry = datetime.strptime(certificate["notAfter"], "%b %d %H:%M:%S %Y %Z").replace(tzinfo=timezone.utc)
+            days = (expiry - datetime.now(timezone.utc)).days
+            info = {"domain": domain, "expiry": expiry.strftime("%d.%m.%Y"), "days": str(days), "error": ""}
+        except Exception as exc:
+            info = {"domain": domain, "expiry": "—", "days": "", "error": str(exc)}
+        self.after(0, self._finish_tls_check, manual, info)
+
+    def _finish_tls_check(self, manual: bool, info: dict[str, str]) -> None:
+        self._tls_info = info
+        if info.get("error"):
+            message = f"TLS {info.get('domain')}: {info['error']}"
+            self.history.add_event("warning", message)
+            if manual:
+                messagebox.showwarning("TLS-сертификат", message)
+        else:
+            days = int(info["days"])
+            message = f"TLS {info['domain']} действует до {info['expiry']} ({days} дн.)"
+            if days <= 14:
+                self.history.add_event("warning", message)
+                if self.tray_icon and self.config.get("notifications", True):
+                    self.tray_icon.notify(message, "TLS-сертификат")
+            elif manual:
+                messagebox.showinfo("TLS-сертификат", message)
+        self.after(max(1, int(self.config.get("tls_check_hours", 12))) * 3600 * 1000,
+                   lambda: self.check_tls_certificate(manual=False))
 
     def _failure_summary(self, router: RouterSnapshot, nodes: list[NodeSnapshot], route: RouteSnapshot,
                          remna_error: str = "") -> tuple[str, str, str]:
@@ -966,6 +1060,32 @@ class MonitorApp(tk.Tk):
     def _display_traffic(self, value: str) -> str:
         return "•••" if self.demo_mode else value
 
+    def apply_profile(self, profile: str) -> None:
+        presets = {
+            "home": {"demo_mode": False, "privacy_mode": False, "refresh_seconds": 10},
+            "demo": {"demo_mode": True, "privacy_mode": True, "always_on_top": True},
+            "diagnostic": {"demo_mode": False, "privacy_mode": True, "refresh_seconds": 5, "watchdog_enabled": True},
+        }
+        if profile not in presets:
+            return
+        self.config.update(presets[profile])
+        self.config["active_profile"] = profile
+        self.demo_mode = bool(self.config["demo_mode"])
+        self.privacy_mode = bool(self.config["privacy_mode"])
+        self.attributes("-topmost", bool(self.config.get("always_on_top", True)))
+        if self.privacy_mode:
+            self._cancel_ip_auto_lock()
+        else:
+            self._schedule_ip_auto_lock()
+        save_config(self.config)
+        self._update_demo_indicator()
+        self._update_privacy_button()
+        self.history.add_event("info", f"ACTION: включён профиль {profile}")
+        self._render_nodes(self._last_nodes, self._last_api_ms, self._last_users, self._last_router,
+                           self._last_route, self._last_remna_error)
+        if self.tray_icon:
+            self.tray_icon.update_menu()
+
     def toggle_demo_mode(self, _event=None) -> None:
         self.demo_mode = not self.demo_mode
         self.config["demo_mode"] = self.demo_mode
@@ -992,6 +1112,14 @@ class MonitorApp(tk.Tk):
 
     def _update_demo_indicator(self) -> None:
         self.demo_indicator.configure(text="DEMO" if self.demo_mode else "")
+
+    def _play_critical_sound(self) -> None:
+        if not self.config.get("critical_sound", True):
+            return
+        try:
+            winsound.MessageBeep(winsound.MB_ICONHAND)
+        except RuntimeError:
+            pass
 
     def toggle_ip_visibility(self, _event=None) -> None:
         self.privacy_mode = not self.privacy_mode
@@ -1043,7 +1171,7 @@ class MonitorApp(tk.Tk):
 
     def force_route_check(self) -> None:
         self._force_route_check = True
-        self.history.add_event("info", "Запущена ручная проверка выходных IP")
+        self.history.add_event("info", "ACTION: запущена ручная проверка выходных IP")
         self.refresh_now()
 
     def start_site_checks(self) -> None:
@@ -1056,6 +1184,7 @@ class MonitorApp(tk.Tk):
             return
         self._site_test_running = True
         self._site_test_results = []
+        self.history.add_event("info", "ACTION: запущен тест сайтов по маршрутам")
         self._render_nodes(self._last_nodes, self._last_api_ms, self._last_users, self._last_router,
                            self._last_route, self._last_remna_error)
         threading.Thread(target=self._site_check_worker, args=(sites,), daemon=True).start()
@@ -1513,6 +1642,88 @@ class MonitorApp(tk.Tk):
             stamp = time.strftime("%d.%m %H:%M:%S", time.localtime(timestamp))
             lines.append(f"{stamp}  {level_icons.get(level, '·')}  {message}")
         self._show_text_window("Журнал событий — StarStack Cascade", "\n".join(lines) or "Событий пока нет")
+
+    def show_action_log(self) -> None:
+        action_markers = ("ACTION:", "перезапущен пользователем", "Запущена ручная", "Тест скорости", "Тест сайтов", "резервная копия")
+        lines = []
+        for timestamp, _level, message in self.history.recent_events():
+            if any(marker in message for marker in action_markers):
+                stamp = time.strftime("%d.%m %H:%M:%S", time.localtime(timestamp))
+                lines.append(f"{stamp}  {message}")
+        self._show_text_window("Журнал действий — StarStack", "\n".join(lines) or "Действий пока нет")
+
+    def show_weekly_report(self) -> None:
+        summary = self.history.weekly_summary()
+        period = int(summary["period_seconds"])
+        lines = ["НЕДЕЛЬНЫЙ ОТЧЁТ STARSTACK", "", f"Событий за 7 дней: {summary['events']}", "", "ДОСТУПНОСТЬ:"]
+        downtime = summary["downtime"]
+        components = ("NX31", "Moscow", "Germany", "ROUTES")
+        for component in components:
+            down = int(downtime.get(component, 0))
+            uptime = max(0.0, 100.0 * (period - down) / period)
+            lines.append(f"  {component:<8} {uptime:6.2f}%   простой {self._format_duration(down)}")
+        lines.extend(["", "ТРАФИК НОД:"])
+        traffic = summary["traffic"]
+        if not traffic:
+            lines.append("  Недостаточно накопленных данных (появятся после обновлений мониторинга).")
+        for node in self._last_nodes:
+            _, name = node_country_and_name(node.name)
+            lines.append(f"  {name:<8} {human_bytes(int(traffic.get(node.uuid, 0)))}")
+        lines.extend(["", "СРЕДНЯЯ ЗАДЕРЖКА:"])
+        for node in self._last_nodes:
+            _, name = node_country_and_name(node.name)
+            values = self.history.values("node", node.uuid, "latency", 7 * 86400)
+            value = f"{sum(values) / len(values):.0f} мс" if values else "нет данных"
+            lines.append(f"  {name:<8} {value}")
+        self._show_text_window("Недельный отчёт — StarStack", "\n".join(lines))
+
+    def request_backup_restore(self) -> None:
+        folder = PROJECT_DIR / "backups"
+        archives = sorted(folder.glob("StarStack-backup-*.zip"), key=lambda item: item.stat().st_mtime, reverse=True)
+        if not archives:
+            messagebox.showinfo("Восстановление NX31", "Резервные копии не найдены.")
+            return
+        choices = "\n".join(f"{index + 1}. {archive.name}" for index, archive in enumerate(archives[:10]))
+        selected = simpledialog.askinteger("Восстановление NX31", f"Выберите backup:\n\n{choices}", minvalue=1, maxvalue=min(10, len(archives)))
+        if not selected:
+            return
+        archive = archives[selected - 1]
+        try:
+            with zipfile.ZipFile(archive) as package:
+                if "openwrt-backup.tar.gz" not in package.namelist():
+                    raise ValueError("В архиве нет openwrt-backup.tar.gz")
+                if package.getinfo("openwrt-backup.tar.gz").file_size < 512:
+                    raise ValueError("Резервная копия NX31 слишком мала")
+        except Exception as exc:
+            messagebox.showerror("Восстановление NX31", f"Архив не прошёл проверку:\n{exc}")
+            return
+        phrase = simpledialog.askstring("Подтверждение", "Операция восстановит конфигурацию NX31 и может перезагрузить роутер.\nВведите RESTORE NX31:")
+        if phrase != "RESTORE NX31":
+            return
+        self.history.add_event("warning", f"ACTION: начато восстановление NX31 из {archive.name}")
+        threading.Thread(target=self._restore_backup_worker, args=(archive,), daemon=True).start()
+
+    def _restore_backup_worker(self, archive: Path) -> None:
+        try:
+            with tempfile.TemporaryDirectory(prefix="starstack-restore-") as temp_name:
+                extracted = Path(temp_name) / "openwrt-backup.tar.gz"
+                with zipfile.ZipFile(archive) as package:
+                    extracted.write_bytes(package.read("openwrt-backup.tar.gz"))
+                self._router_ssh_client().restore_system_backup(extracted)
+            error = ""
+        except Exception as exc:
+            error = str(exc)
+        self.after(0, self._finish_backup_restore, archive.name, error)
+
+    def _finish_backup_restore(self, name: str, error: str) -> None:
+        if error:
+            self.history.add_event("error", f"ACTION: восстановление NX31 не выполнено: {error}")
+            messagebox.showerror("Восстановление NX31", error)
+            return
+        self.history.add_event("warning", f"ACTION: backup {name} отправлен на NX31; ожидается перезагрузка")
+        if self.tray_icon:
+            self.tray_icon.notify("Конфигурация восстановлена. NX31 может перезагрузиться.", "Восстановление NX31")
+        self.after(60_000, self.refresh_now)
 
     def _update_notification_badge(self) -> None:
         unread = len(self.history.events_since(self._notifications_seen_at))
@@ -2063,6 +2274,11 @@ class MonitorApp(tk.Tk):
         wan_label.pack(side="left")
         if router.online:
             wan_label.bind("<Button-1>", self.toggle_ip_visibility)
+        if self._tls_info:
+            tls_days = self._tls_info.get("days", "")
+            tls_text = f"TLS {tls_days} дн." if tls_days else "TLS CHECK"
+            tls_color = GREEN if tls_days and int(tls_days) > 14 else ORANGE
+            tk.Label(bottom, text=tls_text, bg=CARD, fg=tls_color, font=("Segoe UI Semibold", 7)).pack(side="left", padx=8)
         graph = tk.Frame(bottom, bg=CARD)
         graph.pack(side="right")
         spark = self._sparkline(graph, self.history.values("router", "NX31"), 0, 0)
@@ -2092,7 +2308,10 @@ class MonitorApp(tk.Tk):
         menu.add_command(label="Папка диагностики watchdog", command=self.open_diagnostics_folder)
         menu.add_command(label="Устройства домашней сети", command=self.show_lan_devices)
         menu.add_command(label="Создать резервную копию", command=self.create_backup)
+        menu.add_command(label="Восстановить NX31 из backup…", command=self.request_backup_restore)
         menu.add_command(label="Открыть папку резервных копий", command=self.open_backup_folder)
+        menu.add_command(label="Недельный отчёт", command=self.show_weekly_report)
+        menu.add_command(label="Журнал действий", command=self.show_action_log)
         menu.add_separator()
         menu.add_command(label="Перезагрузить NX31…", command=self.request_router_reboot)
         menu.add_command(label="Проверить выходные IP", command=self.force_route_check)
@@ -2162,6 +2381,7 @@ class MonitorApp(tk.Tk):
             if current_failure:
                 message = f"Причина сбоя: {cause} · {detail}"
                 self.history.add_event("error", message)
+                self._play_critical_sound()
                 if self.tray_icon and self.config.get("notifications", True):
                     self.tray_icon.notify(detail, f"Сбой каскада: {cause}")
             elif self._previous_failure:

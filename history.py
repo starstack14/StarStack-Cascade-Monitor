@@ -30,6 +30,12 @@ class HistoryStore:
                 "CREATE INDEX IF NOT EXISTS idx_incidents_started ON incidents(started)"
             )
             self.connection.execute(
+                "CREATE TABLE IF NOT EXISTS node_traffic (ts INTEGER, node_key TEXT, traffic INTEGER)"
+            )
+            self.connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_node_traffic ON node_traffic(node_key, ts)"
+            )
+            self.connection.execute(
                 "CREATE TABLE IF NOT EXISTS device_traffic (ts INTEGER, mac TEXT, rx INTEGER, tx INTEGER)"
             )
             self.connection.execute(
@@ -58,7 +64,11 @@ class HistoryStore:
             return
         with self.lock, self.connection:
             self.connection.executemany("INSERT INTO samples VALUES (?, ?, ?, ?, ?, ?)", rows)
+            traffic_rows = [(now, node.uuid, int(node.traffic_bytes)) for node in nodes]
+            if traffic_rows:
+                self.connection.executemany("INSERT INTO node_traffic VALUES (?, ?, ?)", traffic_rows)
             self.connection.execute("DELETE FROM samples WHERE ts < ?", (now - 7 * 86400,))
+            self.connection.execute("DELETE FROM node_traffic WHERE ts < ?", (now - 7 * 86400,))
 
     def values(self, kind: str, item_key: str, field: str = "ram", seconds: int = 3600) -> list[float]:
         if field not in {"ram", "latency", "load"}:
@@ -254,3 +264,28 @@ class HistoryStore:
             (int(row_id), str(component), int(started), int(ended) if ended is not None else None, str(message))
             for row_id, component, started, ended, message in rows
         ]
+
+    def weekly_summary(self) -> dict[str, object]:
+        now = int(time.time())
+        since = now - 7 * 86400
+        with self.lock:
+            incidents = self.connection.execute(
+                "SELECT component, started, ended FROM incidents WHERE started>=? OR ended IS NULL", (since,)
+            ).fetchall()
+            traffic_rows = self.connection.execute(
+                "SELECT node_key, traffic FROM node_traffic WHERE ts>=? ORDER BY node_key, ts", (since,)
+            ).fetchall()
+            event_count = int(self.connection.execute("SELECT COUNT(*) FROM events WHERE ts>=?", (since,)).fetchone()[0])
+        downtime: dict[str, int] = {}
+        for component, started, ended in incidents:
+            overlap_start = max(since, int(started))
+            overlap_end = min(now, int(ended) if ended is not None else now)
+            downtime[str(component)] = downtime.get(str(component), 0) + max(0, overlap_end - overlap_start)
+        traffic: dict[str, int] = {}
+        grouped: dict[str, list[int]] = {}
+        for node_key, value in traffic_rows:
+            grouped.setdefault(str(node_key), []).append(int(value))
+        for node_key, values in grouped.items():
+            if len(values) >= 2:
+                traffic[node_key] = max(0, values[-1] - values[0])
+        return {"downtime": downtime, "traffic": traffic, "events": event_count, "period_seconds": 7 * 86400}
