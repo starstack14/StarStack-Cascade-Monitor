@@ -29,6 +29,7 @@ from nettest import measure_parallel
 from history import HistoryStore
 from routecheck import RouteSnapshot, check_routes
 from leaktest import LeakTestResult, run_leak_test
+from sitecheck import SiteCheckResult, check_sites
 from security import protect, unprotect
 from webpanel import CaddyManager, DashboardWebServer
 
@@ -36,7 +37,7 @@ APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False)
 PROJECT_DIR = APP_DIR.parent if getattr(sys, "frozen", False) and APP_DIR.name.lower() == "dist" else APP_DIR
 CONFIG_PATH = APP_DIR / "config.local.json"
 DEFAULT_ROUTER_KEY = PROJECT_DIR / "keys" / "router_monitor_ed25519"
-APP_VERSION = "2.4.0"
+APP_VERSION = "2.5.0"
 BG = "#0c080d"
 HEADER = "#150c12"
 CARD = "#21131b"
@@ -92,6 +93,12 @@ def default_config() -> dict:
         "second_screen_y": 80,
         "github_repo": "starstack14/StarStack-Cascade-Monitor",
         "update_check_hours": 12,
+        "demo_mode": False,
+        "route_test_sites": {
+            "DIRECT": "https://mangabuff.ru/",
+            "MOSCOW": "https://habr.com/",
+            "GERMANY": "https://github.com/",
+        },
     }
 
 
@@ -316,6 +323,10 @@ class MonitorApp(tk.Tk):
         self.users_expanded = True
         self.compact_mode = bool(self.config.get("compact_mode", False))
         self.privacy_mode = bool(self.config.get("privacy_mode", False))
+        self.demo_mode = bool(self.config.get("demo_mode", False))
+        self._privacy_before_demo = self.privacy_mode
+        if self.demo_mode:
+            self.privacy_mode = True
         self._privacy_after_id: str | None = None
         self._second_window: tk.Toplevel | None = None
         self._second_status: tk.Label | None = None
@@ -332,6 +343,8 @@ class MonitorApp(tk.Tk):
         self._flag_images: dict[str, ImageTk.PhotoImage] = {}
         self._speed_testing: set[str] = set()
         self._speed_results: dict[str, str] = {}
+        self._site_test_running = False
+        self._site_test_results: list[SiteCheckResult] = []
         self._last_leak: LeakTestResult | None = None
         self._leak_running = False
         self._log_window: tk.Toplevel | None = None
@@ -359,6 +372,7 @@ class MonitorApp(tk.Tk):
         self.tray_icon: pystray.Icon | None = None
         self._configure_styles()
         self._build_ui()
+        self.bind_all("<Control-Shift-h>", self.toggle_demo_mode, add="+")
         if not self.privacy_mode:
             self.after(500, self._schedule_ip_auto_lock)
         self._start_tray()
@@ -457,6 +471,9 @@ class MonitorApp(tk.Tk):
         self.updated = tk.Label(footer, text="", bg=BG, fg=MUTED, font=("Segoe UI", 8))
         self.updated.configure(bg=HEADER)
         self.updated.pack(side="left", padx=12)
+        self.demo_indicator = tk.Label(footer, text="DEMO" if self.demo_mode else "", bg=HEADER,
+                                       fg=ORANGE, font=("Segoe UI Semibold", 8))
+        self.demo_indicator.pack(side="left")
         tk.Button(footer, text="⚙", command=self.open_settings, bg=HEADER, fg=MUTED, bd=0,
                   activebackground=HEADER, activeforeground=CYAN, font=("Segoe UI", 11)).pack(side="right", padx=(0, 8))
         self.privacy_button = tk.Button(
@@ -499,6 +516,7 @@ class MonitorApp(tk.Tk):
             pystray.MenuItem("Открыть мобильную web-панель", lambda: self.after(0, self.open_web_panel)),
             pystray.MenuItem("Обновить", lambda: self.after(0, self.refresh_now)),
             pystray.MenuItem("Проверить выходные IP", lambda: self.after(0, self.force_route_check)),
+            pystray.MenuItem("Проверить сайты по маршрутам", lambda: self.after(0, self.start_site_checks)),
             pystray.MenuItem("Проверить DNS / IPv6", lambda: self.after(0, self.start_leak_test)),
             pystray.MenuItem("Центр уведомлений", lambda: self.after(0, self.show_notification_center)),
             pystray.MenuItem("Таймлайн инцидентов", lambda: self.after(0, self.show_incident_timeline)),
@@ -507,6 +525,8 @@ class MonitorApp(tk.Tk):
             pystray.MenuItem("Все известные устройства", lambda: self.after(0, self.show_known_devices)),
             pystray.MenuItem("Компактный режим", lambda: self.after(0, self.toggle_compact),
                              checked=lambda item: self.compact_mode),
+            pystray.MenuItem("Режим демонстрации (Ctrl+Shift+H)", lambda: self.after(0, self.toggle_demo_mode),
+                             checked=lambda item: self.demo_mode),
             pystray.MenuItem("Второй компактный экран", lambda: self.after(0, self.toggle_second_screen),
                              checked=lambda item: bool(self._second_window and self._second_window.winfo_exists())),
             pystray.MenuItem("Проверить обновления", lambda: self.after(0, lambda: self.check_for_updates(manual=True))),
@@ -620,16 +640,19 @@ class MonitorApp(tk.Tk):
                 "latency": f"{node.latency_ms:.0f} мс" if node.latency_ms is not None else "—",
                 "load": f"{node.load_1m:.2f}" if node.load_1m is not None else "—",
                 "ram": f"{node.ram_percent:.0f}%" if node.ram_percent is not None else "—",
-                "users": node.users_online, "traffic": node.traffic_bytes,
+                "users": node.users_online, "traffic": 0 if self.demo_mode else node.traffic_bytes,
             })
-        users = [{"name": user.username, "node": node_country_and_name(user.node_name)[1],
-                  "device": user.device_label, "ip": self._display_ip(user.request_ip)} for user in self._last_users]
+        users = [{"name": self._display_name(user.username, "Пользователь"),
+                  "node": node_country_and_name(user.node_name)[1],
+                  "device": self._display_name(user.device_label, "Устройство"),
+                  "ip": self._display_ip(user.request_ip)} for user in self._last_users]
         devices = []
         for device in self._last_lan_devices:
             alias, trusted = self._device_metadata.get(device.mac, ("", False))
             rx_total, tx_total, rx_rate, tx_rate = self._device_traffic.get(device.mac, (0, 0, 0.0, 0.0))
             devices.append({
-                "name": alias or device.hostname, "ip": self._display_ip(device.ip), "connection": device.connection,
+                "name": self._display_name(alias or device.hostname, "Устройство"),
+                "ip": self._display_ip(device.ip), "connection": device.connection,
                 "signal": f"{device.signal_dbm} dBm" if device.signal_dbm is not None else "—",
                 "state": device.state, "trusted": trusted, "blocked": device.mac in self._blocked_macs,
                 "rx_total": rx_total, "tx_total": tx_total, "rx_rate": rx_rate, "tx_rate": tx_rate,
@@ -858,7 +881,42 @@ class MonitorApp(tk.Tk):
     def _display_ip(self, value: str | None) -> str:
         if not value:
             return "—"
-        return "•••.•••.•••.•••" if self.privacy_mode else value
+        return "•••.•••.•••.•••" if self.privacy_mode or self.demo_mode else value
+
+    def _display_name(self, value: str | None, placeholder: str = "Скрыто") -> str:
+        if self.demo_mode and value:
+            return placeholder
+        return value or "—"
+
+    def _display_traffic(self, value: str) -> str:
+        return "•••" if self.demo_mode else value
+
+    def toggle_demo_mode(self, _event=None) -> None:
+        self.demo_mode = not self.demo_mode
+        self.config["demo_mode"] = self.demo_mode
+        if self.demo_mode:
+            self._privacy_before_demo = self.privacy_mode
+            self.privacy_mode = True
+            self.config["privacy_mode"] = True
+            self._cancel_ip_auto_lock()
+            message = "Режим демонстрации включён: IP, имена и трафик скрыты"
+        else:
+            self.privacy_mode = self._privacy_before_demo
+            self.config["privacy_mode"] = self.privacy_mode
+            if not self.privacy_mode:
+                self._schedule_ip_auto_lock()
+            message = "Режим демонстрации выключен"
+        save_config(self.config)
+        self._update_demo_indicator()
+        self._update_privacy_button()
+        self.history.add_event("info", message)
+        self._render_nodes(self._last_nodes, self._last_api_ms, self._last_users, self._last_router,
+                           self._last_route, self._last_remna_error)
+        if self.tray_icon:
+            self.tray_icon.update_menu()
+
+    def _update_demo_indicator(self) -> None:
+        self.demo_indicator.configure(text="DEMO" if self.demo_mode else "")
 
     def toggle_ip_visibility(self, _event=None) -> None:
         self.privacy_mode = not self.privacy_mode
@@ -912,6 +970,38 @@ class MonitorApp(tk.Tk):
         self._force_route_check = True
         self.history.add_event("info", "Запущена ручная проверка выходных IP")
         self.refresh_now()
+
+    def start_site_checks(self) -> None:
+        if self._site_test_running:
+            return
+        raw_sites = self.config.get("route_test_sites", {})
+        sites = {str(route).upper(): str(url) for route, url in raw_sites.items() if str(url).startswith("https://")}
+        if not sites:
+            messagebox.showerror("Тест сайтов", "Не настроены тестовые URL для маршрутов.")
+            return
+        self._site_test_running = True
+        self._site_test_results = []
+        self._render_nodes(self._last_nodes, self._last_api_ms, self._last_users, self._last_router,
+                           self._last_route, self._last_remna_error)
+        threading.Thread(target=self._site_check_worker, args=(sites,), daemon=True).start()
+
+    def _site_check_worker(self, sites: dict[str, str]) -> None:
+        results = check_sites(sites)
+        self.after(0, self._finish_site_checks, results)
+
+    def _finish_site_checks(self, results: list[SiteCheckResult]) -> None:
+        self._site_test_running = False
+        self._site_test_results = results
+        failures = [result.route for result in results if not result.ok]
+        if failures:
+            message = "Тест сайтов: недоступны " + ", ".join(failures)
+            self.history.add_event("warning", message)
+            if self.tray_icon and self.config.get("notifications", True):
+                self.tray_icon.notify(message, "Проверка маршрутов")
+        else:
+            self.history.add_event("ok", "Тест сайтов по маршрутам выполнен успешно")
+        self._render_nodes(self._last_nodes, self._last_api_ms, self._last_users, self._last_router,
+                           self._last_route, self._last_remna_error)
 
     def _router_ssh_client(self) -> OpenWrtSshClient:
         router_url = self.config.get("router_url", "http://192.168.1.1")
@@ -1144,7 +1234,7 @@ class MonitorApp(tk.Tk):
 
     def _lan_device_values(self, device: LanDevice) -> tuple:
         alias, trusted = self._device_metadata.get(device.mac, ("", False))
-        display_name = alias or device.hostname
+        display_name = self._display_name(alias or device.hostname, "Устройство")
         if trusted:
             display_name = "✓ " + display_name
         signal = f"{device.signal_dbm} dBm" if device.signal_dbm is not None else "—"
@@ -1681,6 +1771,7 @@ class MonitorApp(tk.Tk):
         self.status_dot.configure(fg=GREEN if all_ok else RED)
         self._cascade_strip(router, nodes)
         self._route_card(route)
+        self._site_tests_card()
         self._failure_card(router, nodes, route, remna_error)
         self._router_card(router)
         self._render_second_screen(router, nodes, route, remna_error)
@@ -1788,7 +1879,28 @@ class MonitorApp(tk.Tk):
                 ip_label.pack(anchor="w", pady=(2, 0))
                 ip_label.bind("<Button-1>", self.toggle_ip_visibility)
                 row.columnconfigure(index, weight=1, uniform="route")
+        tk.Button(card, text="ТЕСТ САЙТОВ ПО МАРШРУТАМ", command=self.start_site_checks,
+                  bg=CARD_ALT, fg=CYAN, bd=0, padx=8, pady=5, cursor="hand2",
+                  activebackground=CARD_ALT, activeforeground=TEXT,
+                  font=("Segoe UI Semibold", 7)).pack(anchor="e", pady=(7, 0))
         self._bind_route_context(card)
+
+    def _site_tests_card(self) -> None:
+        if not self._site_test_running and not self._site_test_results:
+            return
+        card = tk.Frame(self.body, bg=CARD, padx=10, pady=8)
+        card.pack(fill="x", pady=3)
+        if self._site_test_running:
+            tk.Label(card, text="ПРОВЕРКА САЙТОВ ПО МАРШРУТАМ…", bg=CARD, fg=CYAN,
+                     font=("Segoe UI Semibold", 8)).pack(anchor="w")
+            return
+        tk.Label(card, text="САЙТЫ ПО МАРШРУТАМ", bg=CARD, fg=MUTED,
+                 font=("Segoe UI Semibold", 7)).pack(anchor="w")
+        for result in self._site_test_results:
+            color = GREEN if result.ok else RED
+            value = f"{result.status} · {result.latency_ms:.0f} мс" if result.ok and result.latency_ms is not None else result.error
+            tk.Label(card, text=f"{result.route:<8} {result.url}   {value}", bg=CARD, fg=color,
+                     wraplength=400, justify="left", font=("Consolas", 7)).pack(anchor="w", pady=(4, 0))
 
     def _bind_route_context(self, widget: tk.Widget) -> None:
         widget.bind("<Button-3>", self._show_route_menu)
@@ -1799,6 +1911,8 @@ class MonitorApp(tk.Tk):
         menu = tk.Menu(self, tearoff=False, bg=CARD_ALT, fg=TEXT, activebackground=RED,
                        activeforeground=TEXT, bd=0, font=("Segoe UI", 9))
         menu.add_command(label="Проверить выходные IP", command=self.force_route_check)
+        menu.add_command(label="Проверить сайты по маршрутам", command=self.start_site_checks,
+                         state="disabled" if self._site_test_running else "normal")
         menu.add_command(label="Проверить DNS / IPv6", command=self.start_leak_test,
                          state="disabled" if self._leak_running else "normal")
         menu.add_command(label="Журнал событий", command=self.show_event_log)
@@ -2003,12 +2117,14 @@ class MonitorApp(tk.Tk):
             badge.grid_propagate(False)
             tk.Label(badge, text=icon, bg=GLASS, fg=CYAN,
                      font=("Segoe UI Semibold", 11)).place(relx=.5, rely=.5, anchor="center")
-            tk.Label(row, text=user.username, bg=CARD_ALT, fg=TEXT,
+            tk.Label(row, text=self._display_name(user.username, "Пользователь"), bg=CARD_ALT, fg=TEXT,
                      font=("Segoe UI Semibold", 9)).grid(row=0, column=1, sticky="w")
             _, clean_node_name = node_country_and_name(user.node_name)
             tk.Label(row, text=f"{clean_node_name}  •  {user.seconds_ago} сек назад", bg=CARD_ALT,
                      fg=GREEN, font=("Segoe UI Semibold", 7)).grid(row=0, column=2, sticky="e")
-            detail = user.device_label + (f"  •  {self._display_ip(user.request_ip)}" if user.request_ip else "")
+            detail = self._display_name(user.device_label, "Устройство") + (
+                f"  •  {self._display_ip(user.request_ip)}" if user.request_ip else ""
+            )
             detail_label = tk.Label(row, text=detail, bg=CARD_ALT, fg=MUTED, font=("Segoe UI", 8),
                                     anchor="w", cursor="hand2" if user.request_ip else "")
             detail_label.grid(row=1, column=1, columnspan=2, sticky="w", pady=(3, 0))
@@ -2050,7 +2166,7 @@ class MonitorApp(tk.Tk):
             metrics.columnconfigure(index, weight=1, uniform="node")
         bottom = tk.Frame(card, bg=CARD)
         bottom.pack(fill="x")
-        traffic = f"↓↑  {human_rate(rate)}   ·   TOTAL  {human_bytes(node.traffic_bytes)}"
+        traffic = self._display_traffic(f"↓↑  {human_rate(rate)}   ·   TOTAL  {human_bytes(node.traffic_bytes)}")
         tk.Label(bottom, text=traffic, bg=CARD, fg=CYAN, font=("Consolas", 8)).pack(side="left")
         graph = tk.Frame(bottom, bg=CARD)
         graph.pack(side="right")
