@@ -9,6 +9,7 @@
 - Проверка доступности сайтов через настроенные правила Direct, Moscow и Germany.
 - Карточка результатов с HTTP-статусом, задержкой или текстом ошибки.
 - Режим демонстрации с горячей клавишей `Ctrl+Shift+H`.
+- GitHub Actions workflow для публикации GitHub Release с готовым Windows EXE по тегу `v*`.
 
 ### Security
 

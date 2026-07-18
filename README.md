@@ -180,10 +180,21 @@ logs\            журнал Caddy
 tools\caddy.exe  локально установленный HTTPS reverse proxy (не хранится в Git)
 ```
 
+## GitHub Release с EXE
+
+Обычные push и PR только собирают EXE как GitHub Actions artifact. Чтобы опубликовать полноценный Release с приложенным `StarStack-Cascade-Monitor.exe`, создайте и отправьте тег версии:
+
+```powershell
+git tag v2.5.0
+git push origin v2.5.0
+```
+
+Workflow соберёт EXE, создаст GitHub Release и автоматически добавит к нему файл.
+
 ## Безопасность
 
 - не используйте Superadmin JWT; создавайте отдельный API-токен с минимальным read-only scope;
-- API-токен, служебные параметры, пароль роутера и пароль web-панели хранятся через DPAPI;
+- API-токен, служебные параметры и пароль web-панели хранятся через DPAPI; доступ к роутеру выполняется по SSH-ключу;
 - `config.local.json`, private SSH key, резервные копии и диагностика не должны попадать в Git;
 - backend web-панели не принимает подключения из LAN/WAN напрямую;
 - действия, меняющие состояние NX31, требуют подтверждения, кроме ограниченного watchdog sing-box;

@@ -3,12 +3,13 @@ name: Build Windows EXE
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
     branches: [main]
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -32,3 +33,21 @@ jobs:
           path: dist/StarStack-Cascade-Monitor.exe
           if-no-files-found: error
           retention-days: 14
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: windows-latest
+    steps:
+      - name: Download Windows EXE
+        uses: actions/download-artifact@v4
+        with:
+          name: StarStack-Cascade-Monitor-Windows
+          path: release
+      - name: Create release and attach EXE
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" "release/StarStack-Cascade-Monitor.exe" --repo "${{ github.repository }}" --title "StarStack Cascade Monitor ${{ github.ref_name }}" --generate-notes
