@@ -11,6 +11,7 @@ import tempfile
 import threading
 import time
 import tkinter as tk
+import re
 import webbrowser
 import ctypes
 import zipfile
@@ -35,7 +36,7 @@ APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False)
 PROJECT_DIR = APP_DIR.parent if getattr(sys, "frozen", False) and APP_DIR.name.lower() == "dist" else APP_DIR
 CONFIG_PATH = APP_DIR / "config.local.json"
 DEFAULT_ROUTER_KEY = PROJECT_DIR / "keys" / "router_monitor_ed25519"
-APP_VERSION = "2.3.0"
+APP_VERSION = "2.4.0"
 BG = "#0c080d"
 HEADER = "#150c12"
 CARD = "#21131b"
@@ -84,6 +85,13 @@ def default_config() -> dict:
         "window_x": 30,
         "window_y": 80,
         "privacy_mode": False,
+        "privacy_auto_lock_seconds": 45,
+        "web_idle_minutes": 5,
+        "second_screen_enabled": False,
+        "second_screen_x": 950,
+        "second_screen_y": 80,
+        "github_repo": "starstack14/StarStack-Cascade-Monitor",
+        "update_check_hours": 12,
     }
 
 
@@ -230,8 +238,21 @@ class SettingsDialog(tk.Toplevel):
         ttk.Label(self, text="Логин и отдельный пароль web-панели (DPAPI)", foreground=MUTED).grid(
             row=24, column=0, padx=14, sticky="w"
         )
+        privacy_row = ttk.Frame(self)
+        privacy_row.grid(row=25, column=0, padx=14, pady=(10, 0), sticky="w")
+        ttk.Label(privacy_row, text="Скрыть IP через, сек").pack(side="left")
+        self.privacy_auto_lock = ttk.Spinbox(privacy_row, from_=30, to=60, width=6)
+        self.privacy_auto_lock.pack(side="left", padx=(7, 16))
+        self.privacy_auto_lock.set(parent.config.get("privacy_auto_lock_seconds", 45))
+        ttk.Label(privacy_row, text="Web idle, мин").pack(side="left")
+        self.web_idle_minutes = ttk.Spinbox(privacy_row, from_=1, to=60, width=6)
+        self.web_idle_minutes.pack(side="left", padx=(7, 0))
+        self.web_idle_minutes.set(parent.config.get("web_idle_minutes", 5))
+        ttk.Label(self, text="IP раскрываются временно; web-панель выйдет без действий пользователя", foreground=MUTED).grid(
+            row=26, column=0, padx=14, sticky="w"
+        )
         buttons = ttk.Frame(self)
-        buttons.grid(row=25, column=0, padx=14, pady=14, sticky="e")
+        buttons.grid(row=27, column=0, padx=14, pady=14, sticky="e")
         ttk.Button(buttons, text="Отмена", command=self.destroy).pack(side="left", padx=(0, 8))
         ttk.Button(buttons, text="Сохранить", command=self.save).pack(side="left")
 
@@ -254,6 +275,8 @@ class SettingsDialog(tk.Toplevel):
         self.parent.config["web_domain"] = self.web_domain.get().strip().lower()
         self.parent.config["web_username"] = self.web_username.get().strip() or "starstack"
         self.parent.config["web_password_dpapi"] = protect(self.web_password.get())
+        self.parent.config["privacy_auto_lock_seconds"] = max(30, min(60, int(self.privacy_auto_lock.get() or 45)))
+        self.parent.config["web_idle_minutes"] = max(1, min(60, int(self.web_idle_minutes.get() or 5)))
         save_config(self.parent.config)
         self.parent.attributes("-alpha", self.parent.config["opacity"])
         self.destroy()
@@ -293,6 +316,15 @@ class MonitorApp(tk.Tk):
         self.users_expanded = True
         self.compact_mode = bool(self.config.get("compact_mode", False))
         self.privacy_mode = bool(self.config.get("privacy_mode", False))
+        self._privacy_after_id: str | None = None
+        self._second_window: tk.Toplevel | None = None
+        self._second_status: tk.Label | None = None
+        self._second_route: tk.Label | None = None
+        self._previous_failure = ""
+        self._update_check_running = False
+        self._last_update_check = 0.0
+        self._update_window: tk.Toplevel | None = None
+        self._update_info: dict[str, str] = {}
         self._previous_health: dict[str, bool] | None = None
         self._previous_users: set[str] | None = None
         self._previous_routes: tuple[str, str, str] | None = None
@@ -327,8 +359,13 @@ class MonitorApp(tk.Tk):
         self.tray_icon: pystray.Icon | None = None
         self._configure_styles()
         self._build_ui()
+        if not self.privacy_mode:
+            self.after(500, self._schedule_ip_auto_lock)
         self._start_tray()
         self._start_web_panel()
+        if self.config.get("second_screen_enabled", False):
+            self.after(300, self.show_second_screen)
+        self.after(2500, lambda: self.check_for_updates(manual=False))
         if self._new_web_password:
             self.after(1200, self._show_new_web_credentials)
         self.after(100, self._poll_result)
@@ -423,7 +460,7 @@ class MonitorApp(tk.Tk):
         tk.Button(footer, text="⚙", command=self.open_settings, bg=HEADER, fg=MUTED, bd=0,
                   activebackground=HEADER, activeforeground=CYAN, font=("Segoe UI", 11)).pack(side="right", padx=(0, 8))
         self.privacy_button = tk.Button(
-            footer, text="IP ●" if self.privacy_mode else "IP ◉", command=self.toggle_ip_visibility,
+            footer, text="IP ●" if self.privacy_mode else f"IP {self.config.get('privacy_auto_lock_seconds', 45)}с",
             bg=HEADER, fg=ORANGE if self.privacy_mode else MUTED, bd=0,
             activebackground=HEADER, activeforeground=ORANGE, font=("Segoe UI Semibold", 8), cursor="hand2"
         )
@@ -470,6 +507,9 @@ class MonitorApp(tk.Tk):
             pystray.MenuItem("Все известные устройства", lambda: self.after(0, self.show_known_devices)),
             pystray.MenuItem("Компактный режим", lambda: self.after(0, self.toggle_compact),
                              checked=lambda item: self.compact_mode),
+            pystray.MenuItem("Второй компактный экран", lambda: self.after(0, self.toggle_second_screen),
+                             checked=lambda item: bool(self._second_window and self._second_window.winfo_exists())),
+            pystray.MenuItem("Проверить обновления", lambda: self.after(0, lambda: self.check_for_updates(manual=True))),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Журнал sing-box", lambda: self.after(0, self.show_singbox_log)),
             pystray.MenuItem("Папка диагностики watchdog", lambda: self.after(0, self.open_diagnostics_folder)),
@@ -499,6 +539,7 @@ class MonitorApp(tk.Tk):
                 self.config.get("web_username", "starstack"),
                 password,
                 self._web_state,
+                int(self.config.get("web_idle_minutes", 5)) * 60,
             )
             self.web_server.start()
             domain = self.config.get("web_domain", "monitor.example.com")
@@ -535,6 +576,40 @@ class MonitorApp(tk.Tk):
     def open_web_panel(self) -> None:
         webbrowser.open("https://" + self.config.get("web_domain", "monitor.example.com"))
 
+    def _failure_summary(self, router: RouterSnapshot, nodes: list[NodeSnapshot], route: RouteSnapshot,
+                         remna_error: str = "") -> tuple[str, str, str]:
+        if remna_error:
+            return "REMNAWAVE", remna_error, RED
+        if not router.online:
+            return "NX31", router.error or "Роутер недоступен по SSH", RED
+        if not router.singbox_running:
+            return "NX31", "sing-box на роутере не запущен", RED
+        moscow = next((node for node in nodes if node_country_and_name(node.name)[1] == "Moscow"), None)
+        germany = next((node for node in nodes if node_country_and_name(node.name)[1] == "Germany"), None)
+        if moscow and (not moscow.connected or moscow.disabled):
+            return "MOSCOW", "Нода Moscow недоступна", RED
+        if germany and (not germany.connected or germany.disabled):
+            return "GERMANY", "Нода Germany недоступна", RED
+        if self._last_leak and (self._last_leak.error or not self._last_leak.safe):
+            return "DNS", "Проверка DNS/IPv6 требует внимания", ORANGE
+        if not route.healthy:
+            return "DNS", route.error or "Выходные маршруты не подтверждены", ORANGE
+        return "OK", "Все компоненты каскада работают", GREEN
+
+    def _failure_card(self, router: RouterSnapshot, nodes: list[NodeSnapshot], route: RouteSnapshot,
+                      remna_error: str) -> None:
+        cause, detail, color = self._failure_summary(router, nodes, route, remna_error)
+        if cause == "OK":
+            return
+        shell = tk.Frame(self.body, bg=color, padx=2)
+        shell.pack(fill="x", pady=4)
+        card = tk.Frame(shell, bg=CARD, padx=11, pady=8)
+        card.pack(fill="x")
+        tk.Label(card, text=f"ПРИЧИНА СБОЯ · {cause}", bg=CARD, fg=color,
+                 font=("Segoe UI Semibold", 8)).pack(anchor="w")
+        tk.Label(card, text=detail, bg=CARD, fg=MUTED, wraplength=400, justify="left",
+                 font=("Segoe UI", 8)).pack(anchor="w", pady=(4, 0))
+
     def _web_state(self) -> dict:
         nodes = []
         for node in self._last_nodes:
@@ -560,6 +635,8 @@ class MonitorApp(tk.Tk):
                 "rx_total": rx_total, "tx_total": tx_total, "rx_rate": rx_rate, "tx_rate": tx_rate,
             })
         router_ok = self._last_router.online and self._last_router.singbox_running
+        cause, detail, _color = self._failure_summary(self._last_router, self._last_nodes,
+                                                      self._last_route, self._last_remna_error)
         return {
             "updated": int(time.time()),
             "healthy": bool(router_ok and nodes and all(item["online"] for item in nodes)),
@@ -573,6 +650,7 @@ class MonitorApp(tk.Tk):
                        "moscow": self._display_ip(self._last_route.moscow_ip),
                        "germany": self._display_ip(self._last_route.germany_ip),
                        "healthy": self._last_route.healthy},
+            "failure": {"cause": cause, "detail": detail},
         }
 
     def hide_to_tray(self) -> None:
@@ -606,6 +684,168 @@ class MonitorApp(tk.Tk):
         if self.tray_icon:
             self.tray_icon.update_menu()
 
+    def toggle_second_screen(self) -> None:
+        if self._second_window and self._second_window.winfo_exists():
+            self._close_second_screen()
+        else:
+            self.show_second_screen()
+        if self.tray_icon:
+            self.tray_icon.update_menu()
+
+    def show_second_screen(self) -> None:
+        if self._second_window and self._second_window.winfo_exists():
+            self._second_window.deiconify()
+            self._second_window.lift()
+            return
+        window = tk.Toplevel(self)
+        self._second_window = window
+        window.title("StarStack — второй экран")
+        x = int(self.config.get("second_screen_x", 950))
+        y = int(self.config.get("second_screen_y", 80))
+        window.geometry(f"360x185+{x}+{y}")
+        window.minsize(300, 150)
+        window.configure(bg=BG)
+        window.attributes("-topmost", True)
+        window.protocol("WM_DELETE_WINDOW", self._close_second_screen)
+        head = tk.Frame(window, bg=HEADER, padx=12, pady=9)
+        head.pack(fill="x")
+        tk.Label(head, text="◇  STARSTACK · SECOND SCREEN", bg=HEADER, fg=TEXT,
+                 font=("Segoe UI Semibold", 9)).pack(side="left")
+        tk.Button(head, text="×", command=self._close_second_screen, bg=HEADER, fg=MUTED, bd=0,
+                  activebackground=HEADER, activeforeground=TEXT, font=("Segoe UI", 12)).pack(side="right")
+        body = tk.Frame(window, bg=BG, padx=12, pady=12)
+        body.pack(fill="both", expand=True)
+        self._second_status = tk.Label(body, text="● ПРОВЕРКА", bg=BG, fg=MUTED,
+                                       font=("Segoe UI Semibold", 13))
+        self._second_status.pack(anchor="w")
+        self._second_route = tk.Label(body, text="NX31  →  MOSCOW  →  GERMANY", bg=GLASS, fg=TEXT,
+                                      padx=10, pady=9, font=("Consolas", 9))
+        self._second_route.pack(fill="x", pady=(10, 7))
+        self._second_detail = tk.Label(body, text="Ожидание данных…", bg=BG, fg=MUTED,
+                                       wraplength=325, justify="left", font=("Segoe UI", 8))
+        self._second_detail.pack(anchor="w")
+        self.config["second_screen_enabled"] = True
+        save_config(self.config)
+        self._render_second_screen(self._last_router, self._last_nodes, self._last_route, self._last_remna_error)
+
+    def _close_second_screen(self) -> None:
+        if self._second_window and self._second_window.winfo_exists():
+            self.config["second_screen_x"] = self._second_window.winfo_x()
+            self.config["second_screen_y"] = self._second_window.winfo_y()
+            self._second_window.destroy()
+        self._second_window = None
+        self.config["second_screen_enabled"] = False
+        save_config(self.config)
+
+    def _render_second_screen(self, router: RouterSnapshot, nodes: list[NodeSnapshot], route: RouteSnapshot,
+                              remna_error: str) -> None:
+        if not self._second_window or not self._second_window.winfo_exists():
+            return
+        cause, detail, color = self._failure_summary(router, nodes, route, remna_error)
+        if cause == "OK":
+            status = "● КАСКАД OK"
+        else:
+            status = f"● ПРОВЕРИТЬ · {cause}"
+        self._second_status.configure(text=status, fg=color)
+        moscow = next((node for node in nodes if node_country_and_name(node.name)[1] == "Moscow"), None)
+        germany = next((node for node in nodes if node_country_and_name(node.name)[1] == "Germany"), None)
+        m = "●" if moscow and moscow.connected and not moscow.disabled else "×"
+        g = "●" if germany and germany.connected and not germany.disabled else "×"
+        self._second_route.configure(text=f"NX31 ●  →  Moscow {m}  →  Germany {g}")
+        self._second_detail.configure(text=detail)
+
+    @staticmethod
+    def _version_key(value: str) -> tuple[int, ...]:
+        numbers = re.findall(r"\d+", value)
+        return tuple(int(number) for number in (numbers + ["0", "0", "0"])[:3])
+
+    def check_for_updates(self, manual: bool = True) -> None:
+        if self._update_check_running:
+            return
+        now = time.monotonic()
+        interval = max(1, int(self.config.get("update_check_hours", 12))) * 3600
+        if not manual and self._last_update_check and now - self._last_update_check < interval:
+            return
+        self._update_check_running = True
+        self._last_update_check = now
+        threading.Thread(target=self._update_check_worker, args=(manual,), daemon=True).start()
+
+    def _update_check_worker(self, manual: bool) -> None:
+        repo = str(self.config.get("github_repo", "starstack14/StarStack-Cascade-Monitor")).strip()
+        try:
+            result = subprocess.run(
+                ["gh", "api", f"repos/{repo}/releases/latest"], capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=20,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            if result.returncode != 0:
+                raise RuntimeError(result.stderr.strip() or "GitHub Release не найден")
+            release = json.loads(result.stdout)
+            tag = str(release.get("tag_name") or "")
+            assets = release.get("assets") or []
+            asset = next((item for item in assets if str(item.get("name", "")).lower().endswith(".exe")), None)
+            info = {
+                "tag": tag,
+                "body": str(release.get("body") or "Changelog не указан."),
+                "url": str(release.get("html_url") or ""),
+                "asset_url": str(asset.get("browser_download_url") if asset else ""),
+                "asset_name": str(asset.get("name") if asset else ""),
+            }
+            available = bool(tag) and self._version_key(tag) > self._version_key(APP_VERSION)
+            error = ""
+        except Exception as exc:
+            info, available, error = {}, False, str(exc)
+        self.after(0, self._finish_update_check, manual, info, available, error)
+
+    def _finish_update_check(self, manual: bool, info: dict[str, str], available: bool, error: str) -> None:
+        self._update_check_running = False
+        self._update_info = info
+        if error:
+            if manual:
+                messagebox.showinfo("Обновления", f"Не удалось проверить GitHub Releases:\n{error}")
+            return
+        if available and self.tray_icon and self.config.get("notifications", True):
+            self.tray_icon.notify(f"Доступна версия {info.get('tag')}", "StarStack: обновление")
+        if manual or available:
+            self._show_update_window(available)
+        self.after(max(1, int(self.config.get("update_check_hours", 12))) * 3600 * 1000,
+                   lambda: self.check_for_updates(manual=False))
+
+    def _show_update_window(self, available: bool) -> None:
+        if self._update_window and self._update_window.winfo_exists():
+            self._update_window.destroy()
+        info = self._update_info
+        window = tk.Toplevel(self)
+        self._update_window = window
+        window.title("Обновления StarStack")
+        window.geometry("700x500")
+        window.configure(bg=BG)
+        head = tk.Frame(window, bg=HEADER, padx=16, pady=13)
+        head.pack(fill="x")
+        title = f"ДОСТУПНА ВЕРСИЯ {info.get('tag', '—')}" if available else "ВЫ ИСПОЛЬЗУЕТЕ АКТУАЛЬНУЮ ВЕРСИЮ"
+        tk.Label(head, text=title, bg=HEADER, fg=GREEN if not available else ORANGE,
+                 font=("Segoe UI Semibold", 11)).pack(anchor="w")
+        tk.Label(head, text=f"Текущая версия: v{APP_VERSION}", bg=HEADER, fg=MUTED,
+                 font=("Segoe UI", 8)).pack(anchor="w", pady=(3, 0))
+        tk.Label(window, text="CHANGELOG", bg=BG, fg=MUTED, font=("Segoe UI Semibold", 8)).pack(
+            anchor="w", padx=16, pady=(14, 5)
+        )
+        text_widget = tk.Text(window, bg=CARD, fg=TEXT, insertbackground=TEXT, bd=0, wrap="word",
+                              padx=12, pady=10, font=("Segoe UI", 9))
+        text_widget.pack(fill="both", expand=True, padx=16)
+        text_widget.insert("1.0", info.get("body") or "Новая версия не опубликована в GitHub Releases.")
+        text_widget.configure(state="disabled")
+        buttons = tk.Frame(window, bg=BG, padx=16, pady=12)
+        buttons.pack(fill="x")
+        if info.get("asset_url"):
+            tk.Button(buttons, text="СКАЧАТЬ EXE", command=lambda: webbrowser.open(info["asset_url"]),
+                      bg=CARD_ALT, fg=GREEN, bd=0, padx=12, pady=7, cursor="hand2").pack(side="left")
+        if info.get("url"):
+            tk.Button(buttons, text="ОТКРЫТЬ RELEASE", command=lambda: webbrowser.open(info["url"]),
+                      bg=CARD_ALT, fg=CYAN, bd=0, padx=12, pady=7, cursor="hand2").pack(side="left", padx=6)
+        tk.Button(buttons, text="ЗАКРЫТЬ", command=window.destroy, bg=BG, fg=MUTED, bd=0,
+                  padx=10, pady=7).pack(side="right")
+
     def _drag_start(self, event):
         self._drag_x, self._drag_y = event.x_root - self.winfo_x(), event.y_root - self.winfo_y()
 
@@ -624,8 +864,41 @@ class MonitorApp(tk.Tk):
         self.privacy_mode = not self.privacy_mode
         self.config["privacy_mode"] = self.privacy_mode
         save_config(self.config)
-        self.privacy_button.configure(text="IP ●" if self.privacy_mode else "IP ◉",
-                                      fg=ORANGE if self.privacy_mode else MUTED)
+        if self.privacy_mode:
+            self._cancel_ip_auto_lock()
+        else:
+            self._schedule_ip_auto_lock()
+        self._update_privacy_button()
+        self._render_nodes(self._last_nodes, self._last_api_ms, self._last_users, self._last_router,
+                           self._last_route, self._last_remna_error)
+
+    def _update_privacy_button(self) -> None:
+        if self.privacy_mode:
+            text, color = "IP ●", ORANGE
+        else:
+            seconds = int(self.config.get("privacy_auto_lock_seconds", 45))
+            text, color = f"IP {seconds}с", GREEN
+        self.privacy_button.configure(text=text, fg=color)
+
+    def _cancel_ip_auto_lock(self) -> None:
+        if self._privacy_after_id:
+            self.after_cancel(self._privacy_after_id)
+            self._privacy_after_id = None
+
+    def _schedule_ip_auto_lock(self) -> None:
+        self._cancel_ip_auto_lock()
+        seconds = max(30, min(60, int(self.config.get("privacy_auto_lock_seconds", 45))))
+        self._privacy_after_id = self.after(seconds * 1000, self._auto_lock_ips)
+
+    def _auto_lock_ips(self) -> None:
+        self._privacy_after_id = None
+        if self.privacy_mode:
+            return
+        self.privacy_mode = True
+        self.config["privacy_mode"] = True
+        save_config(self.config)
+        self._update_privacy_button()
+        self.history.add_event("info", "IP-адреса автоматически скрыты")
         self._render_nodes(self._last_nodes, self._last_api_ms, self._last_users, self._last_router,
                            self._last_route, self._last_remna_error)
 
@@ -1408,7 +1681,9 @@ class MonitorApp(tk.Tk):
         self.status_dot.configure(fg=GREEN if all_ok else RED)
         self._cascade_strip(router, nodes)
         self._route_card(route)
+        self._failure_card(router, nodes, route, remna_error)
         self._router_card(router)
+        self._render_second_screen(router, nodes, route, remna_error)
         if self.compact_mode:
             self.user_toggle.configure(text="РАЗВЕРНУТЬ")
             self.updated.configure(text=f"обновлено {time.strftime('%H:%M:%S')}")
@@ -1692,6 +1967,17 @@ class MonitorApp(tk.Tk):
         self._threshold_active = set(active_thresholds)
         self._previous_routes = current_routes
         self._previous_health, self._previous_users = health, current_users
+        cause, detail, _color = self._failure_summary(router, nodes, route, self._last_remna_error)
+        current_failure = "" if cause == "OK" else cause
+        if current_failure != self._previous_failure:
+            if current_failure:
+                message = f"Причина сбоя: {cause} · {detail}"
+                self.history.add_event("error", message)
+                if self.tray_icon and self.config.get("notifications", True):
+                    self.tray_icon.notify(detail, f"Сбой каскада: {cause}")
+            elif self._previous_failure:
+                self.history.add_event("ok", f"{self._previous_failure}: причина сбоя устранена")
+            self._previous_failure = current_failure
         self._update_notification_badge()
 
     def _users_section(self, users: list[OnlineUser]) -> None:
