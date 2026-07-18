@@ -37,7 +37,7 @@ APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False)
 PROJECT_DIR = APP_DIR.parent if getattr(sys, "frozen", False) and APP_DIR.name.lower() == "dist" else APP_DIR
 CONFIG_PATH = APP_DIR / "config.local.json"
 DEFAULT_ROUTER_KEY = PROJECT_DIR / "keys" / "router_monitor_ed25519"
-APP_VERSION = "2.5.0"
+APP_VERSION = "2.6.0"
 BG = "#0c080d"
 HEADER = "#150c12"
 CARD = "#21131b"
@@ -813,6 +813,7 @@ class MonitorApp(tk.Tk):
                 "url": str(release.get("html_url") or ""),
                 "asset_url": str(asset.get("browser_download_url") if asset else ""),
                 "asset_name": str(asset.get("name") if asset else ""),
+                "asset_size": str(asset.get("size") if asset else "0"),
             }
             available = bool(tag) and self._version_key(tag) > self._version_key(APP_VERSION)
             error = ""
@@ -860,14 +861,88 @@ class MonitorApp(tk.Tk):
         text_widget.configure(state="disabled")
         buttons = tk.Frame(window, bg=BG, padx=16, pady=12)
         buttons.pack(fill="x")
+        if available and info.get("asset_name"):
+            tk.Button(buttons, text="УСТАНОВИТЬ И ПЕРЕЗАПУСТИТЬ", command=self.request_update_install,
+                      bg=GREEN, fg=BG, bd=0, padx=12, pady=7, cursor="hand2",
+                      activebackground=GREEN, activeforeground=BG,
+                      font=("Segoe UI Semibold", 8)).pack(side="left")
         if info.get("asset_url"):
             tk.Button(buttons, text="СКАЧАТЬ EXE", command=lambda: webbrowser.open(info["asset_url"]),
-                      bg=CARD_ALT, fg=GREEN, bd=0, padx=12, pady=7, cursor="hand2").pack(side="left")
+                      bg=CARD_ALT, fg=GREEN, bd=0, padx=12, pady=7, cursor="hand2").pack(side="left", padx=(6, 0))
         if info.get("url"):
             tk.Button(buttons, text="ОТКРЫТЬ RELEASE", command=lambda: webbrowser.open(info["url"]),
                       bg=CARD_ALT, fg=CYAN, bd=0, padx=12, pady=7, cursor="hand2").pack(side="left", padx=6)
         tk.Button(buttons, text="ЗАКРЫТЬ", command=window.destroy, bg=BG, fg=MUTED, bd=0,
                   padx=10, pady=7).pack(side="right")
+
+    def request_update_install(self) -> None:
+        info = self._update_info
+        if not getattr(sys, "frozen", False):
+            messagebox.showinfo("Обновление", "Автоустановка доступна только из собранного EXE.")
+            return
+        if not info.get("tag") or not info.get("asset_name"):
+            messagebox.showerror("Обновление", "В релизе не найден EXE-файл.")
+            return
+        if not messagebox.askyesno(
+            "Установить обновление?",
+            f"Будет скачана версия {info['tag']}, приложение закроется и запустится заново.\n\nПродолжить?",
+            icon="question",
+        ):
+            return
+        if self._update_window and self._update_window.winfo_exists():
+            self._update_window.destroy()
+        threading.Thread(target=self._download_update_worker, args=(dict(info),), daemon=True).start()
+
+    def _download_update_worker(self, info: dict[str, str]) -> None:
+        update_dir = APP_DIR / "updates"
+        update_dir.mkdir(parents=True, exist_ok=True)
+        destination = update_dir / info["asset_name"]
+        repo = str(self.config.get("github_repo", "starstack14/StarStack-Cascade-Monitor")).strip()
+        try:
+            result = subprocess.run(
+                ["gh", "release", "download", info["tag"], "--repo", repo,
+                 "--pattern", info["asset_name"], "--dir", str(update_dir), "--clobber"],
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            if result.returncode != 0:
+                raise RuntimeError(result.stderr.strip() or "GitHub CLI не скачал EXE")
+            expected_size = int(info.get("asset_size") or 0)
+            if not destination.exists() or destination.stat().st_size < 1_000_000:
+                raise RuntimeError("Скачанный файл слишком мал или отсутствует")
+            if expected_size and destination.stat().st_size != expected_size:
+                raise RuntimeError("Размер скачанного EXE не совпадает с GitHub Release")
+            with destination.open("rb") as binary:
+                if binary.read(2) != b"MZ":
+                    raise RuntimeError("Скачанный файл не является Windows EXE")
+        except Exception as exc:
+            self.after(0, lambda message=str(exc): messagebox.showerror("Обновление не установлено", message))
+            return
+        self.after(0, self._apply_downloaded_update, destination)
+
+    def _apply_downloaded_update(self, downloaded: Path) -> None:
+        target = Path(sys.executable).resolve()
+        if not target.exists():
+            messagebox.showerror("Обновление не установлено", "Не найден текущий EXE.")
+            return
+        script = downloaded.parent / "apply_starstack_update.cmd"
+        script.write_text(
+            "@echo off\r\n"
+            "setlocal\r\n"
+            f"set \"PID={os.getpid()}\"\r\n"
+            f"set \"SOURCE={downloaded}\"\r\n"
+            f"set \"TARGET={target}\"\r\n"
+            ":wait\r\n"
+            "tasklist /FI \"PID eq %PID%\" | findstr /R /C:\" %PID% \" >nul\r\n"
+            "if not errorlevel 1 (timeout /t 1 /nobreak >nul & goto wait)\r\n"
+            "move /Y \"%SOURCE%\" \"%TARGET%\" >nul\r\n"
+            "start \"\" \"%TARGET%\"\r\n"
+            "del \"%~f0\"\r\n",
+            encoding="utf-8",
+        )
+        subprocess.Popen(["cmd.exe", "/c", str(script)], creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        self.history.add_event("info", f"Устанавливается обновление {self._update_info.get('tag', '')}")
+        self.exit_app()
 
     def _drag_start(self, event):
         self._drag_x, self._drag_y = event.x_root - self.winfo_x(), event.y_root - self.winfo_y()
