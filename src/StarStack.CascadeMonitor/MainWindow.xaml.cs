@@ -33,10 +33,10 @@ public partial class MainWindow : Window
     {
         if (_refreshRunning) return; _refreshRunning = true;
         var router = new RouterMonitorService(_settings.RouterHost, _settings.RouterUsername, ResolveKey(), _settings.RouterPort);
-        Task.Run(async () => { var status = router.Read(); IReadOnlyList<RemnawaveNode> nodes = Array.Empty<RemnawaveNode>(); try { nodes = await new RemnawaveClient(_settings.PanelUrl, _settings.ApiToken).GetNodesAsync(); } catch { } return (status, nodes); }).ContinueWith(t => Dispatcher.Invoke(() => { _refreshRunning = false; RenderStatus(t.Result.status, t.Result.nodes); }));
+        Task.Run(async () => { var status = router.Read(); IReadOnlyList<RemnawaveNode> nodes = Array.Empty<RemnawaveNode>(); var remnaError = ""; try { nodes = await new RemnawaveClient(_settings.PanelUrl, _settings.ApiToken).GetNodesAsync(); } catch (Exception ex) { remnaError = ex.Message; } return (status, nodes, remnaError); }).ContinueWith(t => Dispatcher.Invoke(() => { _refreshRunning = false; RenderStatus(t.Result.status, t.Result.nodes, t.Result.remnaError); }));
     }
 
-    private void RenderStatus(RouterStatus router, IReadOnlyList<RemnawaveNode> nodes)
+    private void RenderStatus(RouterStatus router, IReadOnlyList<RemnawaveNode> nodes, string remnaError = "")
     {
         _history.Record(router);
         RouterStatusText.Text = router.Online ? $"{router.Hostname} ONLINE" : "NX31 OFFLINE"; RouterStatusText.Foreground = router.Online ? MediaBrushes.LightGreen : MediaBrushes.IndianRed;
@@ -46,6 +46,7 @@ public partial class MainWindow : Window
         var moscow = nodes.FirstOrDefault(n => n.Name.Contains("Moscow", StringComparison.OrdinalIgnoreCase) || n.Name.StartsWith("RU", StringComparison.OrdinalIgnoreCase));
         var germany = nodes.FirstOrDefault(n => n.Name.Contains("Germany", StringComparison.OrdinalIgnoreCase) || n.Name.StartsWith("DE", StringComparison.OrdinalIgnoreCase));
         RenderNode(MoscowStatusText, MoscowMetricsText, MoscowLoadBar, moscow, "Moscow"); RenderNode(GermanyStatusText, GermanyMetricsText, GermanyLoadBar, germany, "Germany");
+        if (!string.IsNullOrWhiteSpace(remnaError)) { GermanyStatusText.Text = "API ERROR"; GermanyStatusText.Foreground = MediaBrushes.IndianRed; GermanyMetricsText.Text = remnaError.Length > 140 ? remnaError[..140] : remnaError; }
         if (_previousOnline && !router.Online && _settings.NotificationsEnabled) _tray?.ShowBalloonTip(5000, "StarStack Cascade Monitor", "NX31 недоступен по SSH", Forms.ToolTipIcon.Error);
         _previousOnline = router.Online;
     }
