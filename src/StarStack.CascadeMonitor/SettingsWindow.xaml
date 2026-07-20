@@ -1,0 +1,11 @@
+<Window x:Class="StarStack.CascadeMonitor.SettingsWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Title="Настройки" Width="520" Height="520" Background="#0C080D" Foreground="#FFF5F1" WindowStartupLocation="CenterOwner">
+    <ScrollViewer><StackPanel Margin="22"><TextBlock Text="Настройки приложения" FontSize="22" FontWeight="SemiBold" Margin="0,0,0,18"/>
+        <TextBlock Text="NX31 адрес" Foreground="#AE8E96"/><TextBox x:Name="RouterHost" Margin="0,4,0,12"/>
+        <TextBlock Text="SSH private key" Foreground="#AE8E96"/><TextBox x:Name="KeyPath" Margin="0,4,0,12"/>
+        <TextBlock Text="Remnawave URL" Foreground="#AE8E96"/><TextBox x:Name="PanelUrl" Margin="0,4,0,12"/>
+        <TextBlock Text="API-токен (шифруется DPAPI)" Foreground="#AE8E96"/><PasswordBox x:Name="ApiToken" Margin="0,4,0,12"/>
+        <TextBlock Text="Профиль" Foreground="#AE8E96"/><ComboBox x:Name="Profile" Margin="0,4,0,12"><ComboBoxItem Content="Дом" Tag="home"/><ComboBoxItem Content="Демонстрация" Tag="demo"/><ComboBoxItem Content="Диагностика" Tag="diagnostic"/></ComboBox>
+        <CheckBox x:Name="Notifications" Content="Уведомления Windows" Margin="0,4,0,8"/><CheckBox x:Name="AutoStart" Content="Автозапуск приложения" Margin="0,4,0,18"/>
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"><Button Content="Отмена" Width="90" Margin="0,0,8,0" Click="Cancel_Click"/><Button Content="Сохранить" Width="100" Click="Save_Click"/></StackPanel>
+    </StackPanel></ScrollViewer>
+</Window>

@@ -36,7 +36,7 @@ public partial class SshTerminalWindow : Window
     }
     private void Append(string text) => Dispatcher.Invoke(() => { OutputBox.AppendText(text); OutputBox.ScrollToEnd(); });
     private void Send_Click(object sender, RoutedEventArgs e) => SendCommand();
-    private void CommandBox_KeyDown(object sender, KeyEventArgs e) { if (e.Key == Key.Enter) { SendCommand(); e.Handled = true; } }
+    private void CommandBox_KeyDown(object sender, System.Windows.Input.KeyEventArgs e) { if (e.Key == Key.Enter) { SendCommand(); e.Handled = true; } }
     private void SendCommand() { if (_shell is null || _client?.IsConnected != true) return; var command = CommandBox.Text; if (string.IsNullOrWhiteSpace(command)) return; _shell.WriteLine(command); CommandBox.Clear(); }
     private void Close_Click(object sender, RoutedEventArgs e) => Close();
     private void Disconnect() { _stop.Cancel(); try { _shell?.Dispose(); _client?.Disconnect(); _client?.Dispose(); } catch { } }

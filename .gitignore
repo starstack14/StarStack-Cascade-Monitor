@@ -27,6 +27,7 @@ tools/
 venv/
 build/
 dist/
+publish/
 *.spec
 
 # .NET build output
