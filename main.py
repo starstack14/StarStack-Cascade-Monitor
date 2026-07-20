@@ -28,6 +28,7 @@ import pystray
 
 from remnawave import ApiError, NodeSnapshot, OnlineUser, RemnawaveClient, tcp_latency
 from openwrt import LanDevice, OpenWrtSshClient, RouterSnapshot
+from ssh_terminal import SshTerminalWindow
 from nettest import measure_parallel
 from history import HistoryStore
 from routecheck import RouteSnapshot, check_routes
@@ -40,7 +41,7 @@ APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False)
 PROJECT_DIR = APP_DIR.parent if getattr(sys, "frozen", False) and APP_DIR.name.lower() == "dist" else APP_DIR
 CONFIG_PATH = APP_DIR / "config.local.json"
 DEFAULT_ROUTER_KEY = PROJECT_DIR / "keys" / "router_monitor_ed25519"
-APP_VERSION = "2.7.0"
+APP_VERSION = "2.8.0"
 BG = "#0c080d"
 HEADER = "#150c12"
 CARD = "#21131b"
@@ -590,6 +591,8 @@ class MonitorApp(tk.Tk):
             pystray.MenuItem("Открыть папку резервных копий", lambda: self.after(0, self.open_backup_folder)),
             pystray.MenuItem("Перезапустить sing-box…", lambda: self.after(0, self.request_singbox_restart)),
             pystray.MenuItem("Перезагрузить NX31…", lambda: self.after(0, self.request_router_reboot)),
+            pystray.MenuItem("SSH-терминал NX31", lambda: self.after(0, self.open_ssh_terminal)),
+            pystray.MenuItem("SSH-терминал в Windows Terminal", lambda: self.after(0, self.open_external_ssh_terminal)),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Выход", lambda: self.after(0, self.exit_app)),
         )
@@ -1216,6 +1219,34 @@ class MonitorApp(tk.Tk):
             self.config.get("router_ssh_key", str(DEFAULT_ROUTER_KEY)),
             int(self.config.get("router_ssh_port", 22)),
         )
+
+    def open_ssh_terminal(self) -> None:
+        """Open the local embedded terminal; this is intentionally not exposed by webpanel."""
+        key = Path(self.config.get("router_ssh_key", str(DEFAULT_ROUTER_KEY)))
+        if not key.exists():
+            messagebox.showerror("SSH-ключ не найден", f"Не найден private key:\n{key}")
+            return
+        router_url = self.config.get("router_url", "http://192.168.1.1")
+        host = urlsplit(router_url if "://" in router_url else "http://" + router_url).hostname or "192.168.1.1"
+        SshTerminalWindow(self, host, self.config.get("router_username", "root"), str(key),
+                          int(self.config.get("router_ssh_port", 22)),
+                          on_action=lambda msg: self.history.add_event("info", msg))
+
+    def open_external_ssh_terminal(self) -> None:
+        """Open a separate Windows Terminal tab using the same key, never through the web panel."""
+        key = Path(self.config.get("router_ssh_key", str(DEFAULT_ROUTER_KEY)))
+        if not key.exists():
+            messagebox.showerror("SSH-ключ не найден", f"Не найден private key:\n{key}")
+            return
+        router_url = self.config.get("router_url", "http://192.168.1.1")
+        host = urlsplit(router_url if "://" in router_url else "http://" + router_url).hostname or "192.168.1.1"
+        target = f"{self.config.get('router_username', 'root')}@{host}"
+        args = ["wt.exe", "new-tab", "ssh", "-i", str(key), "-p", str(self.config.get("router_ssh_port", 22)), target]
+        try:
+            subprocess.Popen(args, creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0))
+            self.history.add_event("info", f"ACTION: открыт внешний SSH-терминал NX31 ({host})")
+        except OSError as exc:
+            messagebox.showerror("Windows Terminal недоступен", f"Не удалось запустить wt.exe:\n{exc}")
 
     def request_router_reboot(self) -> None:
         key = Path(self.config.get("router_ssh_key", str(DEFAULT_ROUTER_KEY)))
@@ -2314,6 +2345,8 @@ class MonitorApp(tk.Tk):
         menu.add_command(label="Журнал действий", command=self.show_action_log)
         menu.add_separator()
         menu.add_command(label="Перезагрузить NX31…", command=self.request_router_reboot)
+        menu.add_command(label="SSH-терминал NX31", command=self.open_ssh_terminal)
+        menu.add_command(label="SSH-терминал в Windows Terminal", command=self.open_external_ssh_terminal)
         menu.add_command(label="Проверить выходные IP", command=self.force_route_check)
         menu.add_separator()
         menu.add_command(label="Открыть LuCI", command=lambda: webbrowser.open(
