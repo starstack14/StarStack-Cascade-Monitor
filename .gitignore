@@ -22,9 +22,7 @@ logs/
 caddy-data/
 tools/
 
-# Python / build output
-__pycache__/
-*.py[cod]
+# Build output
 .venv/
 venv/
 build/

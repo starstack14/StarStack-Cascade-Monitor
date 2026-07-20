@@ -2,10 +2,10 @@ name: Build Windows EXE
 
 on:
   push:
-    branches: [main]
+    branches: [main, rewrite/dotnet]
     tags: ["v*"]
   pull_request:
-    branches: [main]
+    branches: [main, rewrite/dotnet]
   workflow_dispatch:
 
 permissions:
@@ -16,21 +16,15 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-dotnet@v4
         with:
-          python-version: "3.11"
-          cache: pip
-      - name: Install dependencies
-        run: python -m pip install -r requirements-dev.txt
-      - name: Compile source
-        run: python -m py_compile main.py webpanel.py openwrt.py history.py remnawave.py routecheck.py leaktest.py nettest.py security.py
-      - name: Build executable
-        shell: powershell
-        run: .\build_exe.ps1
+          dotnet-version: "8.0.x"
+      - name: Build self-contained WPF EXE
+        run: dotnet publish src/StarStack.CascadeMonitor/StarStack.CascadeMonitor.csproj --configuration Release --runtime win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true --output publish
       - uses: actions/upload-artifact@v4
         with:
           name: StarStack-Cascade-Monitor-Windows
-          path: dist/StarStack-Cascade-Monitor.exe
+          path: publish/StarStack-Cascade-Monitor.exe
           if-no-files-found: error
           retention-days: 14
 
@@ -49,5 +43,4 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release create "${{ github.ref_name }}" "release/StarStack-Cascade-Monitor.exe" --repo "${{ github.repository }}" --title "StarStack Cascade Monitor ${{ github.ref_name }}" --generate-notes
+        run: gh release create "${{ github.ref_name }}" "release/StarStack-Cascade-Monitor.exe" --repo "${{ github.repository }}" --title "StarStack Cascade Monitor ${{ github.ref_name }}" --generate-notes

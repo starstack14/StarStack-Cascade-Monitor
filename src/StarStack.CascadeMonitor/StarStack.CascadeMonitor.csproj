@@ -6,6 +6,8 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
+    <AssemblyName>StarStack-Cascade-Monitor</AssemblyName>
+    <RootNamespace>StarStack.CascadeMonitor</RootNamespace>
   </PropertyGroup>
 
   <ItemGroup>
