@@ -42,7 +42,7 @@ public partial class MainWindow : Window
         RouterStatusText.Text = router.Online ? $"{router.Hostname} ONLINE" : "NX31 OFFLINE"; RouterStatusText.Foreground = router.Online ? MediaBrushes.LightGreen : MediaBrushes.IndianRed;
         CascadeStatusText.Text = router.Online && router.SingBoxRunning ? "CASCADE READY" : "CASCADE CHECK"; CascadeStatusText.Foreground = router.Online && router.SingBoxRunning ? MediaBrushes.LightGreen : MediaBrushes.Orange;
         MoscowStatusText.Text = router.Online && router.SingBoxRunning ? "ONLINE" : "CHECK"; MoscowStatusText.Foreground = router.Online ? MediaBrushes.LightGreen : MediaBrushes.IndianRed;
-        MoscowMetricsText.Text = $"NX31 uptime {TimeSpan.FromSeconds(router.Uptime):dd\\:hh\\:mm} / Load {router.Load:0.00} / RAM {router.RamPercent:0}%"; MoscowLoadBar.Value = Math.Min(router.Load * 100, 100);
+        MoscowMetricsText.Text = router.Online ? $"NX31 uptime {TimeSpan.FromSeconds(router.Uptime):dd\\:hh\\:mm} / Load {router.Load:0.00} / RAM {router.RamPercent:0}%" : $"SSH: {router.Error}"; MoscowLoadBar.Value = Math.Min(router.Load * 100, 100);
         var moscow = nodes.FirstOrDefault(n => n.Name.Contains("Moscow", StringComparison.OrdinalIgnoreCase) || n.Name.StartsWith("RU", StringComparison.OrdinalIgnoreCase));
         var germany = nodes.FirstOrDefault(n => n.Name.Contains("Germany", StringComparison.OrdinalIgnoreCase) || n.Name.StartsWith("DE", StringComparison.OrdinalIgnoreCase));
         RenderNode(MoscowStatusText, MoscowMetricsText, MoscowLoadBar, moscow, "Moscow"); RenderNode(GermanyStatusText, GermanyMetricsText, GermanyLoadBar, germany, "Germany");
@@ -73,6 +73,14 @@ public partial class MainWindow : Window
     private void OpenEmbeddedSsh_Click(object sender, RoutedEventArgs e) => new SshTerminalWindow(_settings.RouterHost, _settings.RouterUsername, ResolveKey(), _settings.RouterPort) { Owner = this }.Show();
     private void OpenWindowsTerminal_Click(object sender, RoutedEventArgs e) { try { var key = ResolveKey(); Process.Start(new ProcessStartInfo("wt.exe", $"new-tab ssh -i \"{key}\" -p {_settings.RouterPort} {_settings.RouterUsername}@{_settings.RouterHost}") { UseShellExecute = true }); } catch (Exception ex) { WpfMessageBox.Show(ex.Message, "Windows Terminal unavailable", MessageBoxButton.OK, MessageBoxImage.Warning); } }
     private void Refresh_Click(object sender, RoutedEventArgs e) => RefreshStatus();
-    private string ResolveKey() => Path.IsPathRooted(_settings.PrivateKeyPath) ? _settings.PrivateKeyPath : Path.Combine(AppContext.BaseDirectory, _settings.PrivateKeyPath.Replace('/', Path.DirectorySeparatorChar));
+    private string ResolveKey()
+    {
+        if (Path.IsPathRooted(_settings.PrivateKeyPath) && File.Exists(_settings.PrivateKeyPath)) return _settings.PrivateKeyPath;
+        var relative = _settings.PrivateKeyPath.Replace('/', Path.DirectorySeparatorChar);
+        var candidates = new List<string> { Path.Combine(AppContext.BaseDirectory, relative), Path.Combine(Environment.CurrentDirectory, relative), @"D:\StarStack-Cascade-Monitor\keys\router_monitor_ed25519" };
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        for (var i = 0; i < 6 && directory is not null; i++, directory = directory.Parent) candidates.Add(Path.Combine(directory.FullName, relative));
+        return candidates.FirstOrDefault(File.Exists) ?? candidates[0];
+    }
     private void ApplyAutoStart() { try { using var key = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run"); if (_settings.AutoStart) key?.SetValue("StarStackCascadeMonitorDotnet", Environment.ProcessPath ?? ""); else key?.DeleteValue("StarStackCascadeMonitorDotnet", false); } catch { } }
 }
