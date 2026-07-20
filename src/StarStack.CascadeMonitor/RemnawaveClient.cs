@@ -1,5 +1,7 @@
 using System.Net.Http.Headers;
 using System.Net.Http;
+using System.Net;
+using System.Security.Authentication;
 using System.Text.Json;
 
 namespace StarStack.CascadeMonitor;
@@ -8,14 +10,14 @@ public sealed record RemnawaveNode(string Name, bool Online, double Load, double
 
 public sealed class RemnawaveClient
 {
-    private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(8) };
+    private readonly HttpClient _http;
     private readonly string _baseUrl, _token;
-    public RemnawaveClient(string baseUrl, string token) { _baseUrl = baseUrl.TrimEnd('/'); _token = token; }
+    public RemnawaveClient(string baseUrl, string token) { _baseUrl = baseUrl.TrimEnd('/'); _token = token; _http = new HttpClient(new HttpClientHandler { SslProtocols = SslProtocols.Tls12 }) { Timeout = TimeSpan.FromSeconds(8), DefaultRequestVersion = HttpVersion.Version11, DefaultVersionPolicy = HttpVersionPolicy.RequestVersionExact }; }
     public async Task<IReadOnlyList<RemnawaveNode>> GetNodesAsync(CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(_baseUrl) || string.IsNullOrWhiteSpace(_token)) return Array.Empty<RemnawaveNode>();
         using var request = new HttpRequestMessage(HttpMethod.Get, _baseUrl + "/api/nodes"); request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _token);
-        using var response = await _http.SendAsync(request, cancellationToken); response.EnsureSuccessStatusCode(); using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
+        using var response = await _http.SendAsync(request, cancellationToken); var body = await response.Content.ReadAsStringAsync(cancellationToken); if (!response.IsSuccessStatusCode) throw new InvalidOperationException($"Remnawave HTTP {(int)response.StatusCode}: {(body.Length > 160 ? body[..160] : body)}"); using var doc = JsonDocument.Parse(body);
         var result = new List<RemnawaveNode>(); var root = doc.RootElement; var array = FindArray(root, "nodes", "data", "response");
         if (array.ValueKind != JsonValueKind.Array) return result;
         foreach (var item in array.EnumerateArray()) { var name = StringValue(item, "name", "nodeName", "remark") ?? "Node"; var online = BoolValue(item, "isConnected", "online", "connected", "isOnline"); var load = NumberValue(item, "load", "load1", "cpuLoad"); var ram = NumberValue(item, "ram", "ramPercent", "memoryPercent"); var users = (int)NumberValue(item, "users", "usersCount", "onlineUsers"); result.Add(new(name, online, load, ram, users)); }
