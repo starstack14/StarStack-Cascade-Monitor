@@ -20,7 +20,22 @@ public sealed class RemnawaveClient
         using var response = await _http.SendAsync(request, cancellationToken); var body = await response.Content.ReadAsStringAsync(cancellationToken); if (!response.IsSuccessStatusCode) throw new InvalidOperationException($"Remnawave HTTP {(int)response.StatusCode}: {(body.Length > 160 ? body[..160] : body)}"); using var doc = JsonDocument.Parse(body);
         var result = new List<RemnawaveNode>(); var root = doc.RootElement; var array = FindArray(root, "nodes", "data", "response");
         if (array.ValueKind != JsonValueKind.Array) return result;
-        foreach (var item in array.EnumerateArray()) { var name = StringValue(item, "name", "nodeName", "remark") ?? "Node"; var online = BoolValue(item, "isConnected", "online", "connected", "isOnline"); var load = NumberValue(item, "load", "load1", "cpuLoad"); var ram = NumberValue(item, "ram", "ramPercent", "memoryPercent"); var users = (int)NumberValue(item, "users", "usersCount", "onlineUsers"); result.Add(new(name, online, load, ram, users)); }
+        foreach (var item in array.EnumerateArray())
+        {
+            var name = StringValue(item, "name", "nodeName", "remark") ?? "Node";
+            var online = BoolValue(item, "isConnected", "online", "connected", "isOnline");
+            var load = NumberValue(item, "load", "load1", "cpuLoad");
+            if (load == 0) load = FirstArrayNumber(item, "system", "stats", "loadAvg");
+            var ram = NumberValue(item, "ram", "ramPercent", "memoryPercent");
+            if (ram == 0)
+            {
+                var used = NumberValue(item, "system", "stats", "memoryUsed");
+                var total = NumberValue(item, "system", "info", "memoryTotal");
+                if (total > 0) ram = used / total * 100;
+            }
+            var users = (int)NumberValue(item, "users", "usersCount", "onlineUsers", "usersOnline");
+            result.Add(new(name, online, load, ram, users));
+        }
         return result;
     }
     private string Endpoint(string path)
@@ -43,4 +58,13 @@ public sealed class RemnawaveClient
     private static string? StringValue(JsonElement e, params string[] names) => names.Select(n => e.TryGetProperty(n, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null).FirstOrDefault(v => !string.IsNullOrWhiteSpace(v));
     private static bool BoolValue(JsonElement e, params string[] names) => names.Any(n => e.TryGetProperty(n, out var v) && v.ValueKind == JsonValueKind.True);
     private static double NumberValue(JsonElement e, params string[] names) => names.Select(n => e.TryGetProperty(n, out var v) && v.TryGetDouble(out var d) ? d : 0).FirstOrDefault(d => d != 0);
+    private static double NumberValue(JsonElement e, string parent, string child, string name)
+    {
+        return e.TryGetProperty(parent, out var p) && p.TryGetProperty(child, out var c) && c.TryGetProperty(name, out var v) && v.TryGetDouble(out var d) ? d : 0;
+    }
+    private static double FirstArrayNumber(JsonElement e, string parent, string child, string name)
+    {
+        if (!e.TryGetProperty(parent, out var p) || !p.TryGetProperty(child, out var c) || !c.TryGetProperty(name, out var a) || a.ValueKind != JsonValueKind.Array) return 0;
+        return a.EnumerateArray().Select(v => v.TryGetDouble(out var d) ? d : 0).FirstOrDefault();
+    }
 }
