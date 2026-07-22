@@ -18,6 +18,9 @@ public sealed class AppSettings
     public bool NotificationsEnabled { get; set; } = true;
     public bool AutoStart { get; set; } = true;
     public bool MinimizeToTray { get; set; } = true;
+    public bool CompactMode { get; set; } = false;
+    public string Language { get; set; } = "ru";
+    public bool AutoUpdate { get; set; } = false;
     public string GitHubRepository { get; set; } = "starstack14/StarStack-Cascade-Monitor";
     public static string Path => System.IO.Path.Combine(AppContext.BaseDirectory, "appsettings.json");
     public string ApiToken => string.IsNullOrWhiteSpace(ApiTokenProtected) ? "" : Dpapi.Unprotect(ApiTokenProtected);

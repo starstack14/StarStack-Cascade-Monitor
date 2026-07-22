@@ -5,6 +5,8 @@
         <TextBlock Text="Remnawave URL" Foreground="#AE8E96"/><TextBox x:Name="PanelUrl" Margin="0,4,0,12"/>
         <TextBlock Text="API access query (если требуется панелью)" Foreground="#AE8E96"/><TextBox x:Name="AccessQuery" Margin="0,4,0,12"/>
         <TextBlock Text="API-токен (шифруется DPAPI)" Foreground="#AE8E96"/><PasswordBox x:Name="ApiToken" Margin="0,4,0,12"/>
+        <TextBlock Text="Язык" Foreground="#AE8E96"/><ComboBox x:Name="LanguageSelect" Margin="0,4,0,12"><ComboBoxItem Content="Русский" Tag="ru"/><ComboBoxItem Content="English" Tag="en"/></ComboBox>
+        <CheckBox x:Name="CompactMode" Content="Компактный режим виджета" Margin="0,4,0,8"/><CheckBox x:Name="AutoUpdate" Content="Проверять обновления автоматически" Margin="0,4,0,8"/>
         <TextBlock Text="Профиль" Foreground="#AE8E96"/><ComboBox x:Name="Profile" Margin="0,4,0,12"><ComboBoxItem Content="Дом" Tag="home"/><ComboBoxItem Content="Демонстрация" Tag="demo"/><ComboBoxItem Content="Диагностика" Tag="diagnostic"/></ComboBox>
         <CheckBox x:Name="Notifications" Content="Уведомления Windows" Margin="0,4,0,8"/><CheckBox x:Name="AutoStart" Content="Автозапуск приложения" Margin="0,4,0,18"/>
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"><Button Content="Отмена" Width="90" Margin="0,0,8,0" Click="Cancel_Click"/><Button Content="Сохранить" Width="100" Click="Save_Click"/></StackPanel>

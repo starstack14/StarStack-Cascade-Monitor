@@ -11,7 +11,7 @@ namespace StarStack.CascadeMonitor;
 
 public partial class MainWindow : Window
 {
-    private const string AppVersion = "3.0.0";
+    private const string AppVersion = "3.0.2";
     private readonly AppSettings _settings = AppSettings.Load();
     private readonly HistoryStore _history = new();
     private readonly DispatcherTimer _timer = new() { Interval = TimeSpan.FromSeconds(10) };
@@ -25,7 +25,7 @@ public partial class MainWindow : Window
         InitializeComponent();
         SetupTray();
         _timer.Tick += (_, _) => RefreshStatus();
-        Loaded += (_, _) => { ApplyAutoStart(); RefreshStatus(); };
+        Loaded += (_, _) => { ApplyAutoStart(); ApplyCompactMode(); RefreshStatus(); };
         Closing += MainWindow_Closing;
     }
 
@@ -48,6 +48,7 @@ public partial class MainWindow : Window
         var germany = nodes.FirstOrDefault(n => n.Name.Contains("Germany", StringComparison.OrdinalIgnoreCase) || n.Name.StartsWith("DE", StringComparison.OrdinalIgnoreCase));
         RenderNode(MoscowStatusText, MoscowMetricsText, MoscowLoadBar, moscow, "Moscow"); RenderNode(GermanyStatusText, GermanyMetricsText, GermanyLoadBar, germany, "Germany");
         if (!string.IsNullOrWhiteSpace(remnaError)) { GermanyStatusText.Text = "API ERROR"; GermanyStatusText.Foreground = MediaBrushes.IndianRed; GermanyMetricsText.Text = remnaError.Length > 140 ? remnaError[..140] : remnaError; }
+        DiagnosisText.Text = Diagnostics.Explain(router, nodes, remnaError);
         if (_previousOnline && !router.Online && _settings.NotificationsEnabled) _tray?.ShowBalloonTip(5000, "StarStack Cascade Monitor", "NX31 недоступен по SSH", Forms.ToolTipIcon.Error);
         _previousOnline = router.Online;
     }
@@ -65,6 +66,29 @@ public partial class MainWindow : Window
     private void Settings_Click(object sender, RoutedEventArgs e) => OpenSettings();
     private void OpenSettings() { var dialog = new SettingsWindow(_settings) { Owner = this }; if (dialog.ShowDialog() == true) RefreshStatus(); }
     private void Report_Click(object sender, RoutedEventArgs e) => ShowReport();
+    private void HtmlReport_Click(object sender, RoutedEventArgs e) { try { var path = ReportExporter.ExportHtml(_history); Process.Start(new ProcessStartInfo(path) { UseShellExecute = true }); } catch (Exception ex) { WpfMessageBox.Show(ex.Message, "HTML report", MessageBoxButton.OK, MessageBoxImage.Warning); } }
+    private void PdfReport_Click(object sender, RoutedEventArgs e) { try { var path = ReportExporter.ExportPdf(_history); Process.Start(new ProcessStartInfo(path) { UseShellExecute = true }); } catch (Exception ex) { WpfMessageBox.Show(ex.Message, "PDF report", MessageBoxButton.OK, MessageBoxImage.Warning); } }
+    private async void SpeedTest_Click(object sender, RoutedEventArgs e)
+    {
+        try { var m = await SpeedTestService.MeasureLatencyAsync("nodemoscow.starstackcp.online"); var d = await SpeedTestService.MeasureLatencyAsync("nodege.starstackcp.online"); WpfMessageBox.Show($"Moscow: {m} ms\nGermany: {d} ms\n\nЭто проверка задержки TCP до нод.", "Speed test", MessageBoxButton.OK, MessageBoxImage.Information); }
+        catch (Exception ex) { WpfMessageBox.Show(ex.Message, "Speed test", MessageBoxButton.OK, MessageBoxImage.Warning); }
+    }
+    private void Backup_Click(object sender, RoutedEventArgs e)
+    {
+        try { var path = BackupService.Create(_settings); WpfMessageBox.Show($"Резервная копия сохранена:\n{path}", "Backup", MessageBoxButton.OK, MessageBoxImage.Information); }
+        catch (Exception ex) { WpfMessageBox.Show(ex.Message, "Backup", MessageBoxButton.OK, MessageBoxImage.Warning); }
+    }
+    private async void Tls_Click(object sender, RoutedEventArgs e)
+    {
+        var tls = await Diagnostics.CheckTlsAsync(_settings.PanelUrl);
+        WpfMessageBox.Show(tls.Available ? $"TLS-сертификат действителен ещё {tls.DaysRemaining} дней." : $"Не удалось проверить TLS: {tls.Error}", "TLS", MessageBoxButton.OK, tls.Available ? MessageBoxImage.Information : MessageBoxImage.Warning);
+    }
+    private void Restore_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new Microsoft.Win32.OpenFileDialog { Filter = "Backup JSON (*.json)|*.json", InitialDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "StarStack-Backups") };
+        if (dialog.ShowDialog() != true) return;
+        try { BackupService.Restore(dialog.FileName); WpfMessageBox.Show("Настройки восстановлены. Перезапустите приложение.", "Restore", MessageBoxButton.OK, MessageBoxImage.Information); } catch (Exception ex) { WpfMessageBox.Show(ex.Message, "Restore", MessageBoxButton.OK, MessageBoxImage.Warning); }
+    }
     private async void Updates_Click(object sender, RoutedEventArgs e)
     {
         try { var update = await new UpdateService().CheckAsync(_settings.GitHubRepository, AppVersion); WpfMessageBox.Show(update.Available ? $"Доступна версия {update.Version}\n{update.Url}" : "Установлена последняя версия.", "Обновления", MessageBoxButton.OK, MessageBoxImage.Information); }
@@ -74,6 +98,7 @@ public partial class MainWindow : Window
     private void OpenEmbeddedSsh_Click(object sender, RoutedEventArgs e) => new SshTerminalWindow(_settings.RouterHost, _settings.RouterUsername, ResolveKey(), _settings.RouterPort) { Owner = this }.Show();
     private void OpenWindowsTerminal_Click(object sender, RoutedEventArgs e) { try { var key = ResolveKey(); Process.Start(new ProcessStartInfo("wt.exe", $"new-tab ssh -i \"{key}\" -p {_settings.RouterPort} {_settings.RouterUsername}@{_settings.RouterHost}") { UseShellExecute = true }); } catch (Exception ex) { WpfMessageBox.Show(ex.Message, "Windows Terminal unavailable", MessageBoxButton.OK, MessageBoxImage.Warning); } }
     private void Refresh_Click(object sender, RoutedEventArgs e) => RefreshStatus();
+    private void ApplyCompactMode() { if (!_settings.CompactMode) return; Width = 620; Height = 430; MinWidth = 560; MinHeight = 360; }
     private string ResolveKey()
     {
         if (Path.IsPathRooted(_settings.PrivateKeyPath) && File.Exists(_settings.PrivateKeyPath)) return _settings.PrivateKeyPath;
