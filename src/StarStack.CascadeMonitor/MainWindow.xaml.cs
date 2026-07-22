@@ -9,6 +9,15 @@ using Forms = System.Windows.Forms;
 
 namespace StarStack.CascadeMonitor;
 
+internal sealed class RelayCommand : System.Windows.Input.ICommand
+{
+    private readonly Action<object?> _execute;
+    public RelayCommand(Action<object?> execute) => _execute = execute;
+    public bool CanExecute(object? parameter) => true;
+    public void Execute(object? parameter) => _execute(parameter);
+    public event EventHandler? CanExecuteChanged { add { } remove { } }
+}
+
 public partial class MainWindow : Window
 {
     private const string AppVersion = "3.0.2";
@@ -41,6 +50,9 @@ public partial class MainWindow : Window
         try { File.WriteAllText(Path.Combine(AppContext.BaseDirectory, "dotnet-debug.log"), $"{DateTime.Now:O}\nRouterOnline={router.Online}\nSingBox={router.SingBoxRunning}\nError={router.Error}\nRemna={remnaError}\nKey={ResolveKey()}\n"); } catch { }
         _history.Record(router);
         RouterStatusText.Text = router.Online ? $"{router.Hostname} ONLINE" : "NX31 OFFLINE"; RouterStatusText.Foreground = router.Online ? MediaBrushes.LightGreen : MediaBrushes.IndianRed;
+        LastCheckText.Text = $"обновлено {DateTime.Now:HH:mm:ss}";
+        ProfileText.Text = $"Profile: {_settings.ActiveProfile}";
+        RouterMetricsText.Text = router.Online ? $"NX31 · uptime {TimeSpan.FromSeconds(router.Uptime):dd\\:hh\\:mm} · Load {router.Load:0.00} · RAM {router.RamPercent:0}%" : $"NX31 · SSH: {router.Error}";
         CascadeStatusText.Text = router.Online && router.SingBoxRunning ? "CASCADE READY" : "CASCADE CHECK"; CascadeStatusText.Foreground = router.Online && router.SingBoxRunning ? MediaBrushes.LightGreen : MediaBrushes.Orange;
         MoscowStatusText.Text = router.Online && router.SingBoxRunning ? "ONLINE" : "CHECK"; MoscowStatusText.Foreground = router.Online ? MediaBrushes.LightGreen : MediaBrushes.IndianRed;
         MoscowMetricsText.Text = router.Online ? $"NX31 uptime {TimeSpan.FromSeconds(router.Uptime):dd\\:hh\\:mm} / Load {router.Load:0.00} / RAM {router.RamPercent:0}%" : $"SSH: {router.Error}"; MoscowLoadBar.Value = Math.Min(router.Load * 100, 100);
@@ -48,6 +60,11 @@ public partial class MainWindow : Window
         var germany = nodes.FirstOrDefault(n => n.Name.Contains("Germany", StringComparison.OrdinalIgnoreCase) || n.Name.StartsWith("DE", StringComparison.OrdinalIgnoreCase));
         RenderNode(MoscowStatusText, MoscowMetricsText, MoscowLoadBar, moscow, "Moscow"); RenderNode(GermanyStatusText, GermanyMetricsText, GermanyLoadBar, germany, "Germany");
         if (!string.IsNullOrWhiteSpace(remnaError)) { GermanyStatusText.Text = "API ERROR"; GermanyStatusText.Foreground = MediaBrushes.IndianRed; GermanyMetricsText.Text = remnaError.Length > 140 ? remnaError[..140] : remnaError; }
+        MoscowOnlineLabel.Text = moscow?.Online == true ? "ONLINE" : "OFFLINE";
+        GermanyOnlineLabel.Text = germany?.Online == true ? "ONLINE" : "OFFLINE";
+        UsersSummaryText.Text = $"Moscow: {moscow?.Users ?? 0} · Germany: {germany?.Users ?? 0}";
+        UsersList.Items.Clear(); foreach (var node in nodes) UsersList.Items.Add($"{node.Name} · пользователей онлайн: {node.Users}");
+        DrawMiniChart();
         DiagnosisText.Text = Diagnostics.Explain(router, nodes, remnaError);
         if (_previousOnline && !router.Online && _settings.NotificationsEnabled) _tray?.ShowBalloonTip(5000, "StarStack Cascade Monitor", "NX31 недоступен по SSH", Forms.ToolTipIcon.Error);
         _previousOnline = router.Online;
@@ -59,6 +76,22 @@ public partial class MainWindow : Window
     {
         _tray = new Forms.NotifyIcon { Icon = System.Drawing.SystemIcons.Application, Visible = true, Text = "StarStack Cascade Monitor" };
         var menu = new Forms.ContextMenuStrip(); menu.Items.Add("Открыть", null, (_, _) => Dispatcher.Invoke(ShowWindow)); menu.Items.Add("Настройки", null, (_, _) => Dispatcher.Invoke(OpenSettings)); menu.Items.Add("Недельный отчёт", null, (_, _) => Dispatcher.Invoke(ShowReport)); menu.Items.Add(new Forms.ToolStripSeparator()); menu.Items.Add("Выход", null, (_, _) => Dispatcher.Invoke(ExitApplication)); _tray.ContextMenuStrip = menu; _tray.DoubleClick += (_, _) => Dispatcher.Invoke(ShowWindow);
+    }
+    private void Actions_Click(object sender, RoutedEventArgs e)
+    {
+        var menu = new System.Windows.Controls.ContextMenu();
+        menu.Items.Add(new System.Windows.Controls.MenuItem { Header = "Обновить", Command = new RelayCommand(_ => RefreshStatus()) });
+        menu.Items.Add(new System.Windows.Controls.MenuItem { Header = "Недельный отчёт", Command = new RelayCommand(_ => ShowReport()) });
+        menu.Items.Add(new System.Windows.Controls.MenuItem { Header = "Резервная копия", Command = new RelayCommand(_ => Backup_Click(this, new RoutedEventArgs())) });
+        menu.Items.Add(new System.Windows.Controls.Separator()); menu.Items.Add(new System.Windows.Controls.MenuItem { Header = "Выход", Command = new RelayCommand(_ => ExitApplication()) });
+        menu.IsOpen = true;
+    }
+    private void DrawMiniChart()
+    {
+        if (MiniChart is null) return; MiniChart.Children.Clear(); var rows = _history.Recent(60); if (rows.Count < 2) return;
+        var w = MiniChart.ActualWidth > 10 ? MiniChart.ActualWidth : 700; var h = MiniChart.ActualHeight > 10 ? MiniChart.ActualHeight : 330; var points = new System.Windows.Media.PointCollection();
+        for (var i = 0; i < rows.Count; i++) points.Add(new System.Windows.Point(i * w / (rows.Count - 1), h - Math.Min(1, rows[i].Load) * h));
+        var line = new System.Windows.Shapes.Polyline { Points = points, Stroke = MediaBrushes.DeepSkyBlue, StrokeThickness = 2 }; MiniChart.Children.Add(line);
     }
     private void ShowWindow() { Show(); WindowState = WindowState.Normal; Activate(); }
     private void MainWindow_Closing(object? sender, System.ComponentModel.CancelEventArgs e) { if (!_exitRequested && _settings.MinimizeToTray) { e.Cancel = true; Hide(); } else { _tray?.Dispose(); } }
