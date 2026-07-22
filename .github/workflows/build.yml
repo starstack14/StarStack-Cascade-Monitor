@@ -2,10 +2,10 @@ name: Build Windows EXE
 
 on:
   push:
-    branches: [main, rewrite/dotnet]
+    branches: [main]
     tags: ["v*"]
   pull_request:
-    branches: [main, rewrite/dotnet]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
