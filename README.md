@@ -2,6 +2,12 @@
 
 Текущая единственная ветка проекта — `main`. Релиз `v3.0.2` добавляет диагностику каскада, экспорт HTML/PDF, тест задержки Moscow/Germany, TLS-проверку, backup/restore настроек, русский/английский выбор и компактный режим.
 
+## Read-only web dashboard
+
+`src/StarStack.CascadeWeb` — отдельный ASP.NET Core 8 dashboard. Он не предоставляет SSH и команды управления: только статус Remnawave и нод. Секреты задаются переменными окружения `DASHBOARD_PASSWORD`, `REMNAWAVE_TOKEN` и `REMNAWAVE_QUERY` и не хранятся в Git.
+
+Проверка локально: `dotnet run --project src/StarStack.CascadeWeb`. Для Docker используется `src/StarStack.CascadeWeb/Dockerfile`. На сервере dashboard опубликован через `https://monitor.starstackcp.online` за Nginx и Basic Auth.
+
 Новая Windows-версия мониторинга каскада на C# / .NET 8 / WPF. Стабильная Python-версия продолжает жить в ветке `main`; эта ветка полностью собирается только из .NET-проекта.
 
 ## Что уже работает
