@@ -33,7 +33,7 @@ public partial class MainWindow : Window
     {
         if (_refreshRunning) return; _refreshRunning = true;
         var router = new RouterMonitorService(_settings.RouterHost, _settings.RouterUsername, ResolveKey(), _settings.RouterPort);
-        Task.Run(async () => { var status = router.Read(); IReadOnlyList<RemnawaveNode> nodes = Array.Empty<RemnawaveNode>(); var remnaError = ""; try { nodes = await new RemnawaveClient(_settings.PanelUrl, _settings.ApiToken).GetNodesAsync(); } catch (Exception ex) { remnaError = ex.GetBaseException().Message; } return (status, nodes, remnaError); }).ContinueWith(t => Dispatcher.Invoke(() => { _refreshRunning = false; RenderStatus(t.Result.status, t.Result.nodes, t.Result.remnaError); }));
+        Task.Run(async () => { var status = router.Read(); IReadOnlyList<RemnawaveNode> nodes = Array.Empty<RemnawaveNode>(); var remnaError = ""; try { nodes = await new RemnawaveClient(_settings.PanelUrl, _settings.ApiToken, _settings.AccessQuery).GetNodesAsync(); } catch (Exception ex) { remnaError = ex.GetBaseException().Message; } return (status, nodes, remnaError); }).ContinueWith(t => Dispatcher.Invoke(() => { _refreshRunning = false; RenderStatus(t.Result.status, t.Result.nodes, t.Result.remnaError); }));
     }
 
     private void RenderStatus(RouterStatus router, IReadOnlyList<RemnawaveNode> nodes, string remnaError = "")

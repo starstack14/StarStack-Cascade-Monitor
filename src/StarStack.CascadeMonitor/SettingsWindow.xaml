@@ -3,6 +3,7 @@
         <TextBlock Text="NX31 адрес" Foreground="#AE8E96"/><TextBox x:Name="RouterHost" Margin="0,4,0,12"/>
         <TextBlock Text="SSH private key" Foreground="#AE8E96"/><TextBox x:Name="KeyPath" Margin="0,4,0,12"/>
         <TextBlock Text="Remnawave URL" Foreground="#AE8E96"/><TextBox x:Name="PanelUrl" Margin="0,4,0,12"/>
+        <TextBlock Text="API access query (если требуется панелью)" Foreground="#AE8E96"/><TextBox x:Name="AccessQuery" Margin="0,4,0,12"/>
         <TextBlock Text="API-токен (шифруется DPAPI)" Foreground="#AE8E96"/><PasswordBox x:Name="ApiToken" Margin="0,4,0,12"/>
         <TextBlock Text="Профиль" Foreground="#AE8E96"/><ComboBox x:Name="Profile" Margin="0,4,0,12"><ComboBoxItem Content="Дом" Tag="home"/><ComboBoxItem Content="Демонстрация" Tag="demo"/><ComboBoxItem Content="Диагностика" Tag="diagnostic"/></ComboBox>
         <CheckBox x:Name="Notifications" Content="Уведомления Windows" Margin="0,4,0,8"/><CheckBox x:Name="AutoStart" Content="Автозапуск приложения" Margin="0,4,0,18"/>
